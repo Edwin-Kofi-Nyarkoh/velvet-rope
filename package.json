@@ -1,0 +1,19 @@
+{
+  "name": "velvet-rope",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Velvet Rope event ticketing and event management platform.",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @velvet-rope/api --filter @velvet-rope/web dev",
+    "dev:api": "pnpm --filter @velvet-rope/api dev",
+    "dev:web": "pnpm --filter @velvet-rope/web dev",
+    "dev:mobile": "pnpm --filter @velvet-rope/mobile start",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "db:generate": "pnpm --filter @velvet-rope/api prisma:generate",
+    "db:migrate": "pnpm --filter @velvet-rope/api prisma:migrate",
+    "db:seed": "pnpm --filter @velvet-rope/api prisma:seed"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

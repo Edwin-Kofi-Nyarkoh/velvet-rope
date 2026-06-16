@@ -1,0 +1,28 @@
+# Dependencies
+node_modules
+
+# Build outputs
+.next
+.expo
+dist
+build
+coverage
+
+# Secrets — never commit these
+.env
+.env.*
+
+# Claude Code workspace files — local only
+.claude
+
+# Local private notes — never commit
+NOTES.md
+
+# Logs
+*.log
+web-dev.err
+web-dev.log
+
+# Prisma generated files (regenerated on install)
+apps/api/generated
+apps/api/prisma/migrations

@@ -1,0 +1,952 @@
+import { useEffect, useMemo, useState } from "react";
+import { FlatList, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Calendar, Home, LogIn, MessageSquare, Moon, QrCode, Search, Settings, ShieldCheck, Sun, Ticket, Users, WalletCards, Wifi } from "lucide-react-native";
+import { usePaystack } from "react-native-paystack-webview";
+import type { EventSummary } from "@velvet-rope/shared";
+import { Button, Card, Screen, Skeleton, Stat } from "./components";
+import { api, paystackPublicKey } from "./api";
+import type { AppTheme, ThemeMode } from "./theme";
+
+type Notify = (message: string, title?: string, kind?: "success" | "error" | "info") => void;
+
+const filters = [
+  { value: "all", label: "All" },
+  { value: "live", label: "Live" },
+  { value: "upcoming", label: "Soon" },
+  { value: "tomorrow", label: "Tmr" },
+  { value: "popular", label: "Hot" }
+];
+
+async function clearMobileAuth() {
+  await AsyncStorage.multiRemove(["velvet_access_token", "velvet_refresh_token", "velvet_user"]);
+}
+
+async function refreshMobileAccessToken() {
+  const refreshToken = await AsyncStorage.getItem("velvet_refresh_token");
+  if (!refreshToken) {
+    await clearMobileAuth();
+    throw new Error("Your session has expired. Please log in again.");
+  }
+  try {
+    const result = await api.refresh(refreshToken);
+    await AsyncStorage.multiSet([
+      ["velvet_access_token", result.data.accessToken],
+      ["velvet_refresh_token", result.data.refreshToken],
+      ["velvet_user", JSON.stringify(result.data.user)]
+    ]);
+    return result.data.accessToken;
+  } catch {
+    await clearMobileAuth();
+    throw new Error("Your session has expired. Please log in again.");
+  }
+}
+
+async function withMobileAuth<T>(request: (token: string) => Promise<T>) {
+  const token = await AsyncStorage.getItem("velvet_access_token");
+  if (!token) throw new Error("Please log in first.");
+  try {
+    return await request(token);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!/session|expired|invalid|auth/i.test(message)) throw error;
+    return request(await refreshMobileAccessToken());
+  }
+}
+
+export function AuthScreen({ go, onRole, theme, notify }: { go: (screen: string) => void; onRole: (role: string | null) => void; theme: AppTheme; notify: Notify }) {
+  const [mode, setMode] = useState<"login" | "register" | "verify">("login");
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+
+  const loginMutation = useMutation({
+    mutationFn: () => api.login({ email, password }),
+    onSuccess: async (result) => {
+      await AsyncStorage.multiSet([
+        ["velvet_access_token", result.data.accessToken],
+        ["velvet_refresh_token", result.data.refreshToken],
+        ["velvet_user", JSON.stringify(result.data.user)]
+      ]);
+      notify("You are signed in and ready to manage tickets.", "Welcome back", "success");
+      onRole(result.data.user.role);
+      go(["ORGANIZER", "ADMIN", "SUPER_ADMIN"].includes(result.data.user.role) ? "organizer" : "home");
+    },
+    onError: (error) => notify(error.message, "Login failed", "error")
+  });
+
+  const registerMutation = useMutation({
+    mutationFn: () => api.register({ fullName, email, password, role: "ATTENDEE" }),
+    onSuccess: () => {
+      notify("Enter the code we sent to your email. It expires in 10 minutes.", "Verify your email", "success");
+      setMode("verify");
+    },
+    onError: (error) => notify(error.message, "Account could not be created", "error")
+  });
+
+  const verifyMutation = useMutation({
+    mutationFn: () => api.verifyEmail({ email, code }),
+    onSuccess: async (result) => {
+      await AsyncStorage.multiSet([
+        ["velvet_access_token", result.data.accessToken],
+        ["velvet_refresh_token", result.data.refreshToken],
+        ["velvet_user", JSON.stringify(result.data.user)]
+      ]);
+      notify("Your account has been verified.", "Account ready", "success");
+      onRole(result.data.user.role);
+      go("home");
+    },
+    onError: (error) => notify(error.message, "Verification failed", "error")
+  });
+
+  const activeMutation = mode === "login" ? loginMutation : mode === "register" ? registerMutation : verifyMutation;
+
+  return (
+    <Screen theme={theme}>
+      <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        <Text style={[styles.title, { color: theme.colors.ink }]}>{mode === "login" ? "Welcome back" : mode === "register" ? "Create account" : "Verify email"}</Text>
+        <Text style={[styles.copy, { color: theme.colors.slate }]}>
+          {mode === "verify" ? "Enter the 6-digit code sent to your email. It expires in 10 minutes." : "Use the same secure account across web, Android, and iOS."}
+        </Text>
+        {mode === "register" && <TextInput style={inputStyle(theme)} placeholder="Full name" placeholderTextColor={theme.colors.slate} value={fullName} onChangeText={setFullName} />}
+        <TextInput style={inputStyle(theme)} placeholder="Email" placeholderTextColor={theme.colors.slate} autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} />
+        {mode !== "verify" && <TextInput style={inputStyle(theme)} placeholder="Password" placeholderTextColor={theme.colors.slate} secureTextEntry value={password} onChangeText={setPassword} />}
+        {mode === "verify" && <TextInput style={inputStyle(theme)} placeholder="Verification code" placeholderTextColor={theme.colors.slate} keyboardType="number-pad" value={code} onChangeText={setCode} />}
+        {activeMutation.isError && <Text style={[styles.error, { color: theme.colors.danger }]}>{activeMutation.error.message}</Text>}
+        <Button
+          theme={theme}
+          label={activeMutation.isPending ? "Please wait..." : mode === "login" ? "Log in" : mode === "register" ? "Create account" : "Verify account"}
+          disabled={activeMutation.isPending}
+          onPress={() => activeMutation.mutate()}
+        />
+        <Pressable onPress={() => setMode(mode === "login" ? "register" : "login")}>
+          <Text style={[styles.link, { color: theme.colors.slate }]}>{mode === "login" ? "Create a new account" : "Back to login"}</Text>
+        </Pressable>
+        <Pressable onPress={() => go("home")}>
+          <Text style={[styles.link, { color: theme.colors.gold }]}>Continue as guest</Text>
+        </Pressable>
+      </ScrollView>
+    </Screen>
+  );
+}
+
+export function HomeFeedScreen({
+  go,
+  openEvent,
+  theme,
+  isAuthenticated,
+  themeMode,
+  setThemeMode
+}: {
+  go: (screen: string) => void;
+  openEvent: (slug: string) => void;
+  theme: AppTheme;
+  isAuthenticated: boolean;
+  themeMode: ThemeMode;
+  setThemeMode: (mode: ThemeMode) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [liveIndex, setLiveIndex] = useState(0);
+  const queryString = useMemo(() => {
+    const params = new URLSearchParams();
+    if (search.trim()) params.set("search", search.trim());
+    if (filter !== "all") params.set("filter", filter);
+    const value = params.toString();
+    return value ? `?${value}` : "";
+  }, [filter, search]);
+  const eventsQuery = useQuery({ queryKey: ["events", queryString], queryFn: () => api.events(queryString) });
+  const apiEvents = eventsQuery.data?.data ?? [];
+  const visibleEvents = useMemo(
+    () => apiEvents.filter((event) => `${event.title} ${event.venueName} ${event.category} ${event.city}`.toLowerCase().includes(search.toLowerCase())),
+    [apiEvents, search]
+  );
+
+  useEffect(() => {
+    if (apiEvents.length <= 1) return;
+    const timer = setInterval(() => setLiveIndex((current) => (current + 1) % apiEvents.length), 5000);
+    return () => clearInterval(timer);
+  }, [apiEvents.length]);
+
+  const liveEvent = apiEvents.length ? apiEvents[liveIndex % apiEvents.length] : undefined;
+  return (
+    <Screen theme={theme}>
+      <ScrollView
+        stickyHeaderIndices={[1]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.homeScrollContent}
+        refreshControl={<RefreshControl refreshing={eventsQuery.isRefetching && !eventsQuery.isLoading} onRefresh={() => void eventsQuery.refetch()} tintColor={theme.colors.gold} colors={[theme.colors.gold]} progressBackgroundColor={theme.colors.card} />}
+      >
+        <View>
+          <View style={styles.header}>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.kicker, { color: theme.colors.slate }]}>Velvet Rope</Text>
+              <Text style={[styles.heading, { color: theme.colors.ink }]}>Explore events</Text>
+            </View>
+            <View style={styles.headerActions}>
+              <Pressable
+                style={[styles.themeToggle, { backgroundColor: theme.colors.card, borderColor: theme.colors.line }]}
+                onPress={() => setThemeMode(themeMode === "dark" ? "light" : "dark")}
+              >
+                {themeMode === "dark"
+                  ? <Sun size={16} color={theme.colors.gold} />
+                  : <Moon size={16} color={theme.colors.gold} />
+                }
+              </Pressable>
+              {!isAuthenticated && (
+                <Pressable style={[styles.loginButton, { backgroundColor: theme.colors.gold }]} onPress={() => go("auth")}>
+                  <LogIn size={16} color="#ffffff" />
+                  <Text style={styles.loginButtonText}>Log in</Text>
+                </Pressable>
+              )}
+            </View>
+          </View>
+          {liveEvent && (
+            <Pressable style={[styles.liveCard, { backgroundColor: theme.colors.card, borderColor: theme.colors.line }]} onPress={() => openEvent(liveEvent.slug)}>
+              <Text style={[styles.liveKicker, { color: theme.colors.gold }]}>Live now</Text>
+              <Text style={[styles.headerLiveText, { color: theme.colors.ink }]} numberOfLines={1}>{liveEvent.title}</Text>
+              <Text style={[styles.muted, { color: theme.colors.slate }]}>{liveEvent.venueName}, {liveEvent.city}</Text>
+            </Pressable>
+          )}
+          <Card theme={theme} style={{ marginBottom: 14 }}>
+            <Text style={[styles.liveKicker, { color: theme.colors.gold }]}>Secure platform for organized admissions</Text>
+            <Text style={[styles.cardTitle, { color: theme.colors.ink, marginTop: 6 }]}>Ticketing, invitations, QR entry, vendors, seating, and analytics in one clean flow.</Text>
+          </Card>
+          <View style={[styles.search, { backgroundColor: theme.colors.card, borderColor: theme.colors.line }]}>
+            <Search size={18} color={theme.colors.slate} />
+            <TextInput placeholder="Search events, organizer tools..." placeholderTextColor={theme.colors.slate} style={[styles.searchInput, { color: theme.colors.ink }]} value={search} onChangeText={setSearch} />
+          </View>
+          {/organizer|organise|organize|manage|create/i.test(search) && (
+            <View style={{ marginBottom: 14 }}>
+              <Card theme={theme}>
+                <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Organizer tools</Text>
+                <Text style={[styles.copy, { color: theme.colors.slate }]}>Log in as an organizer to manage events, tickets, staff, vendors, seating, and analytics.</Text>
+                <View style={{ height: 12 }} />
+                <Button theme={theme} label="Log in" onPress={() => go("auth")} />
+              </Card>
+            </View>
+          )}
+        </View>
+        <View style={[styles.stickyFilterSurface, { backgroundColor: theme.colors.surface }]}>
+          <ScrollView horizontal style={styles.filterScroller} showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+            {filters.map((item) => (
+              <Pressable key={item.value} onPress={() => setFilter(item.value)} style={[styles.filterPill, { backgroundColor: filter === item.value ? theme.colors.ink : theme.colors.card, borderColor: filter === item.value ? theme.colors.ink : theme.colors.line }]}>
+                <View style={[styles.filterDot, { backgroundColor: filter === item.value ? theme.colors.gold : theme.colors.line }]} />
+                <Text style={{ color: filter === item.value ? theme.colors.surface : theme.colors.slate, fontWeight: "800", fontSize: 13 }}>{item.label}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+        <View style={styles.eventListBlock}>
+          {eventsQuery.isLoading ? (
+            <EventListSkeleton theme={theme} />
+          ) : eventsQuery.isError ? (
+            <Card theme={theme}>
+              <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Events could not load</Text>
+              <Text style={[styles.copy, { color: theme.colors.slate }]}>{eventsQuery.error.message}</Text>
+              <View style={{ height: 12 }} />
+              <Button theme={theme} label="Try again" onPress={() => eventsQuery.refetch()} />
+            </Card>
+          ) : visibleEvents.length === 0 ? (
+            <Card theme={theme}>
+              <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>No events found</Text>
+              <Text style={[styles.copy, { color: theme.colors.slate }]}>Try another filter or search term.</Text>
+            </Card>
+          ) : (
+            visibleEvents.map((event) => <EventRow key={event.id} event={event} theme={theme} onPress={() => openEvent(event.slug)} />)
+          )}
+        </View>
+      </ScrollView>
+    </Screen>
+  );
+}
+
+function EventRow({ event, theme, onPress }: { event: EventSummary; theme: AppTheme; onPress: () => void }) {
+  const date = new Date(event.startsAt);
+  return (
+    <Pressable onPress={onPress}>
+      <Card theme={theme}>
+        <Image source={{ uri: event.bannerUrl }} style={styles.eventImage} resizeMode="cover" />
+        <View style={styles.eventBadges}>
+          {event.isLive && <Text style={[styles.badge, { backgroundColor: theme.colors.gold, color: "#ffffff" }]}>Live</Text>}
+          {event.isPopular && <Text style={[styles.badge, { backgroundColor: theme.colors.muted, color: theme.colors.ink }]}>Popular</Text>}
+          <Text style={[styles.badge, { backgroundColor: theme.colors.muted, color: theme.colors.slate }]}>{event.category}</Text>
+        </View>
+        <View style={styles.cardRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.cardTitle, { color: theme.colors.ink }]} numberOfLines={2}>{event.title}</Text>
+            <Text style={[styles.muted, { color: theme.colors.slate }]}>{event.venueName} - {date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}</Text>
+          </View>
+          <Text style={[styles.price, { color: theme.colors.gold }]}>{event.currency} {event.minPrice}</Text>
+        </View>
+        <View style={[styles.eventAction, { borderTopColor: theme.colors.line }]}>
+          <Text style={{ color: theme.colors.gold, fontWeight: "800", fontSize: 14 }}>View details</Text>
+        </View>
+      </Card>
+    </Pressable>
+  );
+}
+
+export function EventDetailsScreen({ slug, go, theme, isAuthenticated, notify }: { slug: string | null; go: (screen: string) => void; theme: AppTheme; isAuthenticated: boolean; notify: Notify }) {
+  const queryClient = useQueryClient();
+  const { popup } = usePaystack();
+  const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [inviteName, setInviteName] = useState("");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteMessage, setInviteMessage] = useState("");
+  const [verifyingPayment, setVerifyingPayment] = useState(false);
+  const eventQuery = useQuery({ queryKey: ["event", slug], queryFn: () => api.event(slug ?? ""), enabled: Boolean(slug) });
+  const event = eventQuery.data?.data;
+  const ticketTypes = event?.ticketTypes ?? [];
+  const selectedItems = ticketTypes.map((ticket) => ({ ticketTypeId: ticket.id, quantity: quantities[ticket.id] ?? 0, ticket })).filter((item) => item.quantity > 0);
+  const totalAmount = selectedItems.reduce((sum, item) => sum + Number(item.ticket.price) * item.quantity, 0);
+  const totalQuantity = selectedItems.reduce((sum, item) => sum + item.quantity, 0);
+  const currency = ticketTypes[0]?.currency ?? "GHS";
+
+  const checkoutMutation = useMutation({
+    mutationFn: async () => {
+      if (!paystackPublicKey) throw new Error("Paystack public key is missing from the mobile environment.");
+      if (!event) throw new Error("Event is still loading.");
+      if (!selectedItems.length) throw new Error("Select at least one ticket.");
+      return withMobileAuth((token) => api.initializePayment(token, { eventId: event.id, client: "mobile_webview", items: selectedItems.map((item) => ({ ticketTypeId: item.ticketTypeId, quantity: item.quantity })) }));
+    },
+    onSuccess: (result) => {
+      popup.checkout({
+        email: result.data.email,
+        amount: Number(result.data.amount),
+        reference: result.data.reference,
+        metadata: {
+          custom_fields: [
+            {
+              display_name: "Velvet Rope Reference",
+              variable_name: "velvet_rope_reference",
+              value: result.data.reference
+            }
+          ]
+        },
+        onSuccess: async (paymentResult) => {
+          const reference = paymentResult.reference || result.data.reference;
+          setVerifyingPayment(true);
+          try {
+            await withMobileAuth((token) => api.verifyPayment(token, reference));
+            await queryClient.invalidateQueries({ queryKey: ["my-tickets"] });
+            await queryClient.invalidateQueries({ queryKey: ["events"] });
+            notify("Your QR ticket is ready in My tickets.", "Payment successful", "success");
+            go("ticket");
+          } catch (error) {
+            notify(error instanceof Error ? error.message : "Payment verification failed.", "Verification failed", "error");
+          } finally {
+            setVerifyingPayment(false);
+          }
+        },
+        onCancel: () => notify("Payment was cancelled. No ticket was issued.", "Checkout cancelled", "info"),
+        onError: (error) => notify(error?.message ?? "Unable to open Paystack checkout.", "Checkout error", "error")
+      });
+    },
+    onError: (error) => {
+      if (/log in|session/i.test(error.message)) {
+        notify("Please log in before buying tickets.", "Login required", "error");
+        go("auth");
+        return;
+      }
+      notify(error.message, "Checkout", "error");
+    }
+  });
+
+  const inviteMutation = useMutation({
+    mutationFn: async () => {
+      if (!event) throw new Error("Event is still loading.");
+      return withMobileAuth((token) => api.createInvitation(token, { eventId: event.id, recipientName: inviteName, email: inviteEmail, message: inviteMessage || undefined }));
+    },
+    onSuccess: () => {
+      setInviteName("");
+      setInviteEmail("");
+      setInviteMessage("");
+      notify("Invitation sent to the email address.", "Invitation", "success");
+    },
+    onError: (error) => {
+      if (/log in|session/i.test(error.message)) {
+        notify("Please log in before sending invitations.", "Login required", "error");
+        go("auth");
+        return;
+      }
+      notify(error.message, "Invitation", "error");
+    }
+  });
+
+  const calendarMutation = useMutation({
+    mutationFn: async () => {
+      if (!event) throw new Error("Event is still loading.");
+      return api.calendarEvent(event.id);
+    },
+    onSuccess: (result) => notify(`${result.data.filename} is ready to add to your calendar.`, "Calendar file ready", "success"),
+    onError: (error) => notify(error.message, "Calendar", "error")
+  });
+
+  const friendsQuery = useQuery({
+    queryKey: ["friends-attending", event?.id],
+    queryFn: async () => withMobileAuth((token) => api.friendsAttending(token, event!.id)),
+    enabled: Boolean(event?.id && isAuthenticated),
+    retry: false
+  });
+
+  if (eventQuery.isLoading) {
+    return (
+      <Screen theme={theme}>
+        <SubPageHeader title="Event details" theme={theme} onBack={() => go("home")} />
+        <EventDetailSkeleton theme={theme} />
+      </Screen>
+    );
+  }
+
+  if (eventQuery.isError) {
+    return (
+      <Screen theme={theme}>
+        <SubPageHeader title="Event details" theme={theme} onBack={() => go("home")} />
+        <Card theme={theme}>
+          <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>This event could not load</Text>
+          <Text style={[styles.copy, { color: theme.colors.slate }]}>{eventQuery.error.message}</Text>
+          <View style={{ height: 12 }} />
+          <Button theme={theme} label="Try again" onPress={() => eventQuery.refetch()} />
+        </Card>
+      </Screen>
+    );
+  }
+
+  if (!event) {
+    return (
+      <Screen theme={theme}>
+        <SubPageHeader title="Event details" theme={theme} onBack={() => go("home")} />
+        <Text style={[styles.title, { color: theme.colors.ink }]}>Event not found</Text>
+      </Screen>
+    );
+  }
+
+  return (
+    <Screen theme={theme}>
+      <SubPageHeader title="Event details" theme={theme} onBack={() => go("home")} />
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 156 }}
+        refreshControl={<RefreshControl refreshing={eventQuery.isRefetching && !eventQuery.isLoading} onRefresh={() => void eventQuery.refetch()} tintColor={theme.colors.gold} colors={[theme.colors.gold]} progressBackgroundColor={theme.colors.card} />}
+      >
+        <Image source={{ uri: event.bannerUrl }} style={styles.detailImage} resizeMode="cover" />
+        <Text style={[styles.title, { color: theme.colors.ink }]}>{event.title}</Text>
+        <Text style={[styles.copy, { color: theme.colors.slate }]}>{event.description}</Text>
+        <Text style={[styles.muted, { color: theme.colors.slate }]}>{event.venueName}, {event.city}</Text>
+        <Card theme={theme} style={{ marginTop: 18 }}>
+          <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Tickets</Text>
+          {ticketTypes.map((ticket) => {
+            const available = ticket.quantity - ticket.soldQuantity;
+            const quantity = quantities[ticket.id] ?? 0;
+            return (
+              <View key={ticket.id} style={[styles.ticketLine, { borderBottomColor: theme.colors.line }]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: theme.colors.ink, fontWeight: "700" }}>{ticket.name}</Text>
+                  <Text style={[styles.muted, { color: theme.colors.slate }]}>{ticket.currency} {Number(ticket.price).toLocaleString()} - {available} left</Text>
+                </View>
+                <View style={styles.stepper}>
+                  <Pressable style={[styles.stepperButton, { borderColor: theme.colors.line }]} onPress={() => setQuantities((current) => ({ ...current, [ticket.id]: Math.max(0, quantity - 1) }))}>
+                    <Text style={{ color: theme.colors.ink }}>-</Text>
+                  </Pressable>
+                  <Text style={{ color: theme.colors.ink, width: 24, textAlign: "center", fontWeight: "800" }}>{quantity}</Text>
+                  <Pressable style={[styles.stepperButton, { borderColor: theme.colors.line }]} onPress={() => setQuantities((current) => ({ ...current, [ticket.id]: Math.min(10, quantity + 1) }))}>
+                    <Text style={{ color: theme.colors.ink }}>+</Text>
+                  </Pressable>
+                </View>
+              </View>
+            );
+          })}
+          <View style={[styles.ticketLine, { borderBottomWidth: 0 }]}>
+            <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Total</Text>
+            <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>{currency} {totalAmount.toLocaleString()}</Text>
+          </View>
+        </Card>
+        <View style={{ height: 16 }} />
+        <Button theme={theme} label={checkoutMutation.isPending || verifyingPayment ? "Processing checkout..." : "Continue to checkout"} disabled={!totalQuantity || checkoutMutation.isPending || verifyingPayment} onPress={() => checkoutMutation.mutate()} />
+        <View style={{ height: 10 }} />
+        <Button theme={theme} label={calendarMutation.isPending ? "Preparing calendar..." : "Add to Calendar"} secondary onPress={() => calendarMutation.mutate()} />
+        {!isAuthenticated && (
+          <>
+            <View style={{ height: 10 }} />
+            <Button theme={theme} label="Log in / create account" secondary onPress={() => go("auth")} />
+          </>
+        )}
+        {isAuthenticated && (friendsQuery.data?.data?.length ?? 0) > 0 && (
+          <Card theme={theme} style={{ marginTop: 18 }}>
+            <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Friends attending</Text>
+            {friendsQuery.data?.data.map((friend) => (
+              <Text key={String(friend.id)} style={[styles.muted, { color: theme.colors.slate }]}>{String(friend.fullName)} - {String(friend.provider)} - {String(friend.status)}</Text>
+            ))}
+          </Card>
+        )}
+        <Card theme={theme} style={{ marginTop: 18 }}>
+          <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Invite someone</Text>
+          <Text style={[styles.copy, { color: theme.colors.slate }]}>Send this event to a friend by email.</Text>
+          <TextInput style={inputStyle(theme)} placeholder="Recipient name" placeholderTextColor={theme.colors.slate} value={inviteName} onChangeText={setInviteName} />
+          <TextInput style={inputStyle(theme)} placeholder="Email address" placeholderTextColor={theme.colors.slate} autoCapitalize="none" keyboardType="email-address" value={inviteEmail} onChangeText={setInviteEmail} />
+          <TextInput style={[inputStyle(theme), { minHeight: 76, paddingTop: 12 }]} placeholder="Optional note" placeholderTextColor={theme.colors.slate} multiline value={inviteMessage} onChangeText={setInviteMessage} />
+          <View style={{ height: 12 }} />
+          <Button theme={theme} label={inviteMutation.isPending ? "Sending..." : "Send invitation"} disabled={inviteMutation.isPending || !inviteName || !inviteEmail} onPress={() => inviteMutation.mutate()} />
+        </Card>
+      </ScrollView>
+    </Screen>
+  );
+}
+
+export function TicketScreen({ go, theme, notify }: { go: (screen: string) => void; theme: AppTheme; notify: Notify }) {
+  const queryClient = useQueryClient();
+  const ticketsQuery = useQuery({
+    queryKey: ["my-tickets"],
+    queryFn: async () => withMobileAuth((token) => api.myTickets(token)),
+    retry: false
+  });
+  const refreshTickets = (showToast = false) => {
+    if (showToast) notify("Checking for your latest tickets.", "Refreshing", "info");
+    void ticketsQuery.refetch();
+    void queryClient.invalidateQueries({ queryKey: ["my-tickets"] });
+  };
+
+  return (
+    <Screen theme={theme}>
+      <View style={styles.header}>
+        <Text style={[styles.titleSmall, { color: theme.colors.ink }]}>My tickets</Text>
+        <Pressable onPress={() => refreshTickets(true)}>
+          <Text style={[styles.price, { color: theme.colors.gold }]}>Refresh</Text>
+        </Pressable>
+      </View>
+      {ticketsQuery.isLoading ? (
+        <ScrollView refreshControl={<RefreshControl refreshing={ticketsQuery.isRefetching && !ticketsQuery.isLoading} onRefresh={() => refreshTickets()} tintColor={theme.colors.gold} colors={[theme.colors.gold]} progressBackgroundColor={theme.colors.card} />}>
+          <TicketSkeleton theme={theme} />
+        </ScrollView>
+      ) : ticketsQuery.isError ? (
+        <ScrollView refreshControl={<RefreshControl refreshing={ticketsQuery.isRefetching && !ticketsQuery.isLoading} onRefresh={() => refreshTickets()} tintColor={theme.colors.gold} colors={[theme.colors.gold]} progressBackgroundColor={theme.colors.card} />}>
+          <Card theme={theme}>
+            <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Tickets could not load</Text>
+            <Text style={[styles.copy, { color: theme.colors.slate }]}>{ticketsQuery.error.message}</Text>
+            <View style={{ height: 12 }} />
+            <Button theme={theme} label={/log in|session/i.test(ticketsQuery.error.message) ? "Log in" : "Try again"} onPress={() => (/log in|session/i.test(ticketsQuery.error.message) ? go("auth") : ticketsQuery.refetch())} />
+          </Card>
+        </ScrollView>
+      ) : (
+        <FlatList
+          data={ticketsQuery.data?.data ?? []}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={{ gap: 14, paddingBottom: 156, flexGrow: 1 }}
+          refreshing={ticketsQuery.isRefetching && !ticketsQuery.isLoading}
+          onRefresh={() => refreshTickets()}
+          ListEmptyComponent={
+            <Card theme={theme}>
+              <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>No tickets yet</Text>
+              <Text style={[styles.copy, { color: theme.colors.slate }]}>When you buy tickets, your QR codes will appear here.</Text>
+              <View style={{ height: 12 }} />
+              <Button theme={theme} label="Browse events" onPress={() => go("home")} />
+            </Card>
+          }
+          renderItem={({ item }) => (
+            <Card theme={theme}>
+              {item.qrCodeDataUrl ? <Image source={{ uri: item.qrCodeDataUrl }} style={styles.qrImage} /> : <QrCode size={120} color={theme.colors.gold} />}
+              <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>{item.eventTitle}</Text>
+              <Text style={[styles.muted, { color: theme.colors.slate }]}>{item.ticketType} - {item.status}</Text>
+              {item.seat && <Text style={[styles.muted, { color: theme.colors.slate }]}>Seat {item.seat.table ?? ""} {item.seat.label} - {item.seat.zone ?? "Main"}</Text>}
+              {item.nfcToken && <Text style={[styles.qrPayload, { color: theme.colors.slate, backgroundColor: theme.colors.muted }]}>NFC: {item.nfcToken}</Text>}
+              <Text style={[styles.qrPayload, { color: theme.colors.slate, backgroundColor: theme.colors.muted }]}>{item.qrCodePayload}</Text>
+            </Card>
+          )}
+        />
+      )}
+    </Screen>
+  );
+}
+
+export function InvitationsScreen({ go, theme }: { go: (screen: string) => void; theme: AppTheme }) {
+  const invitationsQuery = useQuery({
+    queryKey: ["my-invitations"],
+    queryFn: async () => withMobileAuth((token) => api.myInvitations(token)),
+    retry: false
+  });
+
+  return (
+    <Screen theme={theme}>
+      <Text style={[styles.title, { color: theme.colors.ink }]}>Invitations</Text>
+      {invitationsQuery.isLoading ? (
+        <TicketSkeleton theme={theme} />
+      ) : invitationsQuery.isError ? (
+        <Card theme={theme}>
+          <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Invitations could not load</Text>
+          <Text style={[styles.copy, { color: theme.colors.slate }]}>{invitationsQuery.error.message}</Text>
+          <View style={{ height: 12 }} />
+          <Button theme={theme} label={/log in|session/i.test(invitationsQuery.error.message) ? "Log in" : "Try again"} onPress={() => (/log in|session/i.test(invitationsQuery.error.message) ? go("auth") : invitationsQuery.refetch())} />
+        </Card>
+      ) : (invitationsQuery.data?.data.length ?? 0) === 0 ? (
+        <Card theme={theme}>
+          <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>No invitations yet</Text>
+          <Text style={[styles.copy, { color: theme.colors.slate }]}>Private invitations will appear here once an organizer sends one to your email.</Text>
+        </Card>
+      ) : (
+        <FlatList
+          data={invitationsQuery.data?.data ?? []}
+          keyExtractor={(item) => String(item.id)}
+          contentContainerStyle={{ gap: 14, paddingBottom: 156 }}
+          refreshing={invitationsQuery.isRefetching && !invitationsQuery.isLoading}
+          onRefresh={() => void invitationsQuery.refetch()}
+          renderItem={({ item }) => (
+            <Card theme={theme}>
+              <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>{String(item.eventTitle)}</Text>
+              <Text style={[styles.muted, { color: theme.colors.slate }]}>From {String(item.sender)} - {String(item.status)}</Text>
+              {item.message ? <Text style={[styles.copy, { color: theme.colors.slate }]}>{String(item.message)}</Text> : null}
+            </Card>
+          )}
+        />
+      )}
+    </Screen>
+  );
+}
+
+export function SettingsScreen({ go, onRole, theme, notify }: { go: (screen: string) => void; onRole: (role: string | null) => void; theme: AppTheme; notify: Notify }) {
+  const [fullName, setFullName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [city, setCity] = useState("");
+  const [country, setCountry] = useState("");
+  const [socialHandle, setSocialHandle] = useState("");
+  const [socialName, setSocialName] = useState("");
+  const [followers, setFollowers] = useState("0");
+
+  const meQuery = useQuery({
+    queryKey: ["me"],
+    queryFn: async () => withMobileAuth((token) => api.me(token)),
+    retry: false
+  });
+
+  useEffect(() => {
+    const profile = meQuery.data?.data.profile;
+    if (!profile) return;
+    setFullName(profile.fullName ?? "");
+    setPhone(profile.phone ?? "");
+    setCity(profile.city ?? "");
+    setCountry(profile.country ?? "");
+  }, [meQuery.data]);
+
+  const updateMutation = useMutation({
+    mutationFn: async () => withMobileAuth((token) => api.updateMe(token, { fullName, phone, city, country })),
+    onSuccess: async (result) => {
+      await AsyncStorage.setItem("velvet_user", JSON.stringify(result.data));
+      notify("Settings saved.", "Profile updated", "success");
+    },
+    onError: (error) => notify(error.message, "Settings", "error")
+  });
+
+  const vipQuery = useQuery({
+    queryKey: ["vip-verification"],
+    queryFn: async () => withMobileAuth((token) => api.vipVerification(token)),
+    retry: false
+  });
+
+  const socialMutation = useMutation({
+    mutationFn: async () => withMobileAuth((token) => api.upsertSocialAccount(token, { provider: "X", handle: socialHandle, displayName: socialName || socialHandle, followerCount: Number(followers) || 0 })),
+    onSuccess: () => {
+      notify("Social account linked.", "VIP verification", "success");
+      void vipQuery.refetch();
+    },
+    onError: (error) => notify(error.message, "VIP verification", "error")
+  });
+
+  const vipMutation = useMutation({
+    mutationFn: async () => withMobileAuth((token) => api.submitVipVerification(token, { provider: "X", handle: socialHandle })),
+    onSuccess: () => {
+      notify("VIP verification request submitted.", "VIP verification", "success");
+      void vipQuery.refetch();
+    },
+    onError: (error) => notify(error.message, "VIP verification", "error")
+  });
+
+  const logout = async () => {
+    await clearMobileAuth();
+    onRole(null);
+    go("home");
+  };
+
+  return (
+    <Screen theme={theme}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 156 }}
+        refreshControl={<RefreshControl refreshing={meQuery.isRefetching && !meQuery.isLoading} onRefresh={() => void meQuery.refetch()} tintColor={theme.colors.gold} colors={[theme.colors.gold]} progressBackgroundColor={theme.colors.card} />}
+      >
+        <Text style={[styles.title, { color: theme.colors.ink }]}>Settings</Text>
+        <Text style={[styles.copy, { color: theme.colors.slate }]}>Update the name and preferences used on tickets and invitations.</Text>
+        {meQuery.isLoading ? (
+          <TicketSkeleton theme={theme} />
+        ) : (
+          <Card theme={theme} style={{ marginTop: 18 }}>
+            <TextInput style={inputStyle(theme)} placeholder="Full name" placeholderTextColor={theme.colors.slate} value={fullName} onChangeText={setFullName} />
+            <TextInput style={inputStyle(theme)} placeholder="Phone" placeholderTextColor={theme.colors.slate} value={phone} onChangeText={setPhone} />
+            <TextInput style={inputStyle(theme)} placeholder="City" placeholderTextColor={theme.colors.slate} value={city} onChangeText={setCity} />
+            <TextInput style={inputStyle(theme)} placeholder="Country" placeholderTextColor={theme.colors.slate} value={country} onChangeText={setCountry} />
+            <View style={{ height: 14 }} />
+            <Button theme={theme} label={updateMutation.isPending ? "Saving..." : "Save settings"} disabled={updateMutation.isPending} onPress={() => updateMutation.mutate()} />
+            <View style={{ height: 10 }} />
+            <Button theme={theme} label="Log out" secondary onPress={logout} />
+          </Card>
+        )}
+        <Card theme={theme} style={{ marginTop: 18 }}>
+          <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>VIP and social verification</Text>
+          <Text style={[styles.copy, { color: theme.colors.slate }]}>Link your X account for VIP influencer checks and friends-attending signals.</Text>
+          <TextInput style={inputStyle(theme)} placeholder="X handle" placeholderTextColor={theme.colors.slate} value={socialHandle} onChangeText={setSocialHandle} />
+          <TextInput style={inputStyle(theme)} placeholder="Display name" placeholderTextColor={theme.colors.slate} value={socialName} onChangeText={setSocialName} />
+          <TextInput style={inputStyle(theme)} placeholder="Follower count" placeholderTextColor={theme.colors.slate} keyboardType="number-pad" value={followers} onChangeText={setFollowers} />
+          <View style={{ height: 12 }} />
+          <Button theme={theme} label={socialMutation.isPending ? "Linking..." : "Link X account"} disabled={!socialHandle || socialMutation.isPending} onPress={() => socialMutation.mutate()} />
+          <View style={{ height: 10 }} />
+          <Button theme={theme} label={vipMutation.isPending ? "Submitting..." : "Request VIP verification"} secondary disabled={!socialHandle || vipMutation.isPending} onPress={() => vipMutation.mutate()} />
+          {vipQuery.data?.data.accounts.map((account) => (
+            <Text key={account.id} style={[styles.muted, { color: theme.colors.slate }]}>{account.provider} @{account.handle} - {account.vipStatus}</Text>
+          ))}
+        </Card>
+      </ScrollView>
+    </Screen>
+  );
+}
+
+export function ScannerScreen({ go, theme, notify }: { go: (screen: string) => void; theme: AppTheme; notify: Notify }) {
+  const [mode, setMode] = useState<"QR" | "NFC">("QR");
+  const [payload, setPayload] = useState("");
+  const [gate, setGate] = useState("Main");
+  const scanMutation = useMutation({
+    mutationFn: async () => withMobileAuth((token) => mode === "QR" ? api.validateCheckIn(token, { qrCodePayload: payload, gate }) : api.validateNfcCheckIn(token, { nfcToken: payload, gate })),
+    onSuccess: () => notify("Entry validated.", "Scanner", "success"),
+    onError: (error) => notify(error.message, "Scanner", "error")
+  });
+
+  return (
+    <Screen theme={theme}>
+      <SubPageHeader title="Staff scanner" theme={theme} onBack={() => go("home")} />
+      <Text style={[styles.title, { color: theme.colors.ink }]}>Staff scanner</Text>
+      <Card theme={theme}>
+        <View style={styles.row}>
+          <Button theme={theme} label="QR" secondary={mode !== "QR"} onPress={() => setMode("QR")} />
+          <Button theme={theme} label="NFC" secondary={mode !== "NFC"} onPress={() => setMode("NFC")} />
+        </View>
+        <TextInput style={[inputStyle(theme), { minHeight: 86, paddingTop: 12 }]} placeholder={mode === "QR" ? "Paste QR payload" : "Paste NFC token"} placeholderTextColor={theme.colors.slate} multiline value={payload} onChangeText={setPayload} />
+        <TextInput style={inputStyle(theme)} placeholder="Gate" placeholderTextColor={theme.colors.slate} value={gate} onChangeText={setGate} />
+        <View style={{ height: 12 }} />
+        <Button theme={theme} label={scanMutation.isPending ? "Validating..." : "Validate entry"} disabled={!payload || scanMutation.isPending} onPress={() => scanMutation.mutate()} />
+      </Card>
+      <Card theme={theme} style={{ marginTop: 18 }}>
+        <ShieldCheck size={28} color={theme.colors.gold} />
+        <Text style={[styles.cardTitle, { color: theme.colors.ink, marginTop: 12 }]}>Scan result</Text>
+        {scanMutation.data ? Object.entries(scanMutation.data.data).map(([key, value]) => (
+          <Text key={key} style={[styles.muted, { color: theme.colors.slate }]}>{key}: {String(value)}</Text>
+        )) : <Text style={[styles.copy, { color: theme.colors.slate }]}>Validate QR tickets or NFC wristbands directly against the backend.</Text>}
+      </Card>
+    </Screen>
+  );
+}
+
+export function OrganizerQuickScreen({ go, theme }: { go?: (screen: string) => void; theme: AppTheme }) {
+  const dashboardQuery = useQuery({ queryKey: ["organizer-dashboard"], queryFn: async () => withMobileAuth((token) => api.organizerDashboard(token)), retry: false });
+  const transactionsQuery = useQuery({ queryKey: ["vendor-transactions"], queryFn: async () => withMobileAuth((token) => api.vendorTransactions(token)), retry: false });
+  const messagesQuery = useQuery({ queryKey: ["communications"], queryFn: async () => withMobileAuth((token) => api.communications(token)), retry: false });
+  const socialQuery = useQuery({ queryKey: ["hashtag-analytics"], queryFn: async () => withMobileAuth((token) => api.hashtagAnalytics(token)), retry: false });
+  const data = dashboardQuery.data?.data as Record<string, unknown> | undefined;
+  const metrics = (data?.metrics ?? {}) as Record<string, unknown>;
+  const events = (data?.events ?? []) as Record<string, unknown>[];
+  const socialSummary = ((socialQuery.data?.data as Record<string, unknown> | undefined)?.summary ?? []) as Record<string, unknown>[];
+
+  return (
+    <Screen theme={theme}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 156 }}
+        refreshControl={<RefreshControl refreshing={dashboardQuery.isRefetching} onRefresh={() => { void dashboardQuery.refetch(); void transactionsQuery.refetch(); void messagesQuery.refetch(); void socialQuery.refetch(); }} tintColor={theme.colors.gold} colors={[theme.colors.gold]} progressBackgroundColor={theme.colors.card} />}
+      >
+        <Text style={[styles.title, { color: theme.colors.ink }]}>Organizer dashboard</Text>
+        <Button theme={theme} label="Open QR / NFC scanner" secondary onPress={() => go?.("scanner")} />
+        <View style={{ height: 14 }} />
+        {dashboardQuery.isLoading ? (
+          <TicketSkeleton theme={theme} />
+        ) : dashboardQuery.isError ? (
+          <Card theme={theme}>
+            <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Dashboard could not load</Text>
+            <Text style={[styles.copy, { color: theme.colors.slate }]}>{dashboardQuery.error.message}</Text>
+          </Card>
+        ) : (
+          <>
+            <View style={styles.stats}>
+              <Stat theme={theme} label="Revenue" value={`GHS ${Number(metrics.revenue ?? 0).toLocaleString()}`} />
+              <Stat theme={theme} label="Tickets" value={String(metrics.ticketsSold ?? 0)} />
+            </View>
+            <View style={styles.stats}>
+              <Stat theme={theme} label="Check-ins" value={String(metrics.checkIns ?? 0)} />
+              <Stat theme={theme} label="Vendors" value={String(metrics.vendors ?? 0)} />
+            </View>
+            <Card theme={theme}>
+              <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Events</Text>
+              {events.map((event) => (
+                <Text key={String(event.id)} style={[styles.muted, { color: theme.colors.slate }]}>{String(event.title)} - {String(event.ticketsSold)} sold - {String(event.checkIns)} check-ins</Text>
+              ))}
+            </Card>
+          </>
+        )}
+        <Card theme={theme} style={{ marginTop: 18 }}>
+          <MessageSquare size={22} color={theme.colors.gold} />
+          <Text style={[styles.cardTitle, { color: theme.colors.ink, marginTop: 10 }]}>Staff and vendor communication</Text>
+          {(messagesQuery.data?.data ?? []).slice(0, 4).map((message) => (
+            <Text key={message.id} style={[styles.muted, { color: theme.colors.slate }]}>{message.audience}: {message.subject}</Text>
+          ))}
+        </Card>
+        <Card theme={theme} style={{ marginTop: 18 }}>
+          <WalletCards size={22} color={theme.colors.gold} />
+          <Text style={[styles.cardTitle, { color: theme.colors.ink, marginTop: 10 }]}>Vendor transactions</Text>
+          {(transactionsQuery.data?.data ?? []).slice(0, 4).map((transaction) => (
+            <Text key={transaction.id} style={[styles.muted, { color: theme.colors.slate }]}>{transaction.vendor} - {transaction.currency} {transaction.amount} - {transaction.status}</Text>
+          ))}
+        </Card>
+        <Card theme={theme} style={{ marginTop: 18 }}>
+          <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Social and hashtag analytics</Text>
+          {socialSummary.slice(0, 4).map((item) => (
+            <Text key={`${item.provider}-${item.hashtag}`} style={[styles.muted, { color: theme.colors.slate }]}>{String(item.provider)} {String(item.hashtag)} - {Number(item.reach ?? 0).toLocaleString()} reach</Text>
+          ))}
+        </Card>
+      </ScrollView>
+    </Screen>
+  );
+}
+
+export function BottomNav({ active, go, canSeeOrganizer, isAuthenticated, theme }: { active: string; go: (screen: string) => void; canSeeOrganizer: boolean; isAuthenticated: boolean; theme: AppTheme }) {
+  const items: Array<readonly [string, typeof Home]> = [
+    ["home", Home],
+    ["ticket", Ticket],
+    ["invitations", Calendar],
+    [isAuthenticated ? "settings" : "auth", isAuthenticated ? Settings : LogIn]
+  ];
+  if (canSeeOrganizer) items.push(["organizer", Users]);
+  return (
+    <View style={[styles.nav, { backgroundColor: theme.colors.card, borderColor: theme.colors.line }]}>
+      {items.map(([screen, Icon]) => (
+        <Pressable key={screen} onPress={() => go(screen)} style={styles.navItem}>
+          <Icon color={active === screen ? theme.colors.gold : theme.colors.slate} size={22} />
+          <Text style={{ color: active === screen ? theme.colors.gold : theme.colors.slate, fontSize: 11, fontWeight: "700", marginTop: 2 }}>{screen === "ticket" ? "Tickets" : screen === "auth" ? "Login" : screen.charAt(0).toUpperCase() + screen.slice(1)}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+function EventListSkeleton({ theme }: { theme: AppTheme }) {
+  return (
+    <View style={{ gap: 14 }}>
+      {[0, 1, 2].map((item) => (
+        <Card key={item} theme={theme}>
+          <Skeleton theme={theme} style={{ height: 140 }} />
+          <Skeleton theme={theme} style={{ height: 18, width: "75%", marginTop: 14 }} />
+          <Skeleton theme={theme} style={{ height: 14, width: "52%", marginTop: 10 }} />
+        </Card>
+      ))}
+    </View>
+  );
+}
+
+function EventDetailSkeleton({ theme }: { theme: AppTheme }) {
+  return (
+    <View>
+      <Skeleton theme={theme} style={{ height: 230, marginBottom: 20 }} />
+      <Skeleton theme={theme} style={{ height: 34, width: "70%" }} />
+      <Skeleton theme={theme} style={{ height: 16, width: "90%", marginTop: 14 }} />
+      <Skeleton theme={theme} style={{ height: 190, marginTop: 22 }} />
+    </View>
+  );
+}
+
+function TicketSkeleton({ theme }: { theme: AppTheme }) {
+  return (
+    <View style={{ gap: 14 }}>
+      {[0, 1].map((item) => (
+        <Card key={item} theme={theme}>
+          <Skeleton theme={theme} style={{ height: 170 }} />
+          <Skeleton theme={theme} style={{ height: 18, width: "70%", marginTop: 14 }} />
+        </Card>
+      ))}
+    </View>
+  );
+}
+
+function SubPageHeader({ title, theme, onBack }: { title: string; theme: AppTheme; onBack: () => void }) {
+  return (
+    <View style={[styles.subPageHeader, { backgroundColor: theme.colors.surface }]}>
+      <Pressable onPress={onBack} style={[styles.backButton, { borderColor: theme.colors.line, backgroundColor: theme.colors.card }]}>
+        <Text style={{ color: theme.colors.gold, fontWeight: "900", fontSize: 18 }}>{"<"}</Text>
+      </Pressable>
+      <Text style={[styles.subPageTitle, { color: theme.colors.ink }]}>{title}</Text>
+      <View style={{ width: 42 }} />
+    </View>
+  );
+}
+
+function inputStyle(theme: AppTheme) {
+  return {
+    height: 48,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    backgroundColor: theme.colors.card,
+    borderWidth: 1,
+    borderColor: theme.colors.line,
+    color: theme.colors.ink,
+    marginTop: 14,
+    fontSize: 15
+  };
+}
+
+const styles = StyleSheet.create({
+  title: { fontWeight: "800", fontSize: 31, lineHeight: 37, marginBottom: 12 },
+  titleSmall: { fontWeight: "800", fontSize: 25 },
+  heading: { fontWeight: "800", fontSize: 24 },
+  kicker: { fontSize: 13, marginBottom: 4 },
+  copy: { fontSize: 15, lineHeight: 23, marginTop: 8 },
+  row: { flexDirection: "row", gap: 10 },
+  homeScrollContent: { paddingBottom: 156 },
+  stickyFilterSurface: { paddingTop: 2, paddingBottom: 2, zIndex: 20 },
+  filterScroller: { maxHeight: 48, flexGrow: 0 },
+  eventListBlock: { gap: 14 },
+  filterRow: { gap: 6, paddingBottom: 14 },
+  filterPill: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7, minHeight: 34, flexDirection: "row", alignItems: "center", gap: 6 },
+  filterDot: { width: 5, height: 5, borderRadius: 999 },
+  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 12 },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  themeToggle: { width: 36, height: 36, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  loginButton: { minHeight: 40, borderRadius: 12, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", gap: 6 },
+  loginButtonText: { color: "#ffffff", fontSize: 13, fontWeight: "800" },
+  search: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 48, borderRadius: 14, paddingHorizontal: 14, borderWidth: 1, marginBottom: 16 },
+  searchInput: { flex: 1, fontSize: 15 },
+  link: { textAlign: "center", marginTop: 18, fontSize: 15, fontWeight: "700" },
+  linkLeft: { marginBottom: 16, fontSize: 15, fontWeight: "800" },
+  subPageHeader: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12, zIndex: 30 },
+  backButton: { width: 42, height: 42, borderRadius: 14, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  subPageTitle: { fontSize: 16, fontWeight: "800" },
+  error: { borderRadius: 10, paddingVertical: 10, marginVertical: 12, fontSize: 15 },
+  themeButton: { width: 44, height: 44, borderRadius: 14, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  liveCard: { borderWidth: 1, borderRadius: 14, padding: 12, marginBottom: 14 },
+  liveKicker: { fontWeight: "800", fontSize: 12 },
+  headerLiveText: { fontWeight: "800", fontSize: 15, marginTop: 3 },
+  eventImage: { height: 145, borderRadius: 12, marginBottom: 14, backgroundColor: "#111827" },
+  eventBadges: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },
+  badge: { overflow: "hidden", borderRadius: 999, paddingHorizontal: 9, paddingVertical: 5, fontSize: 12, fontWeight: "800" },
+  eventAction: { marginTop: 14, paddingTop: 12, borderTopWidth: 1 },
+  detailImage: { height: 230, borderRadius: 18, marginBottom: 20, backgroundColor: "#111827" },
+  cardRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
+  cardTitle: { fontWeight: "800", fontSize: 17 },
+  muted: { marginTop: 4, fontSize: 14 },
+  price: { fontWeight: "800", fontSize: 14 },
+  ticketLine: { paddingVertical: 14, borderBottomWidth: 1, flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 },
+  stepper: { flexDirection: "row", alignItems: "center", gap: 8 },
+  stepperButton: { width: 32, height: 32, borderRadius: 9, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  qrImage: { width: 180, height: 180, alignSelf: "center", marginBottom: 18, borderRadius: 12, backgroundColor: "#ffffff" },
+  qrPayload: { marginTop: 12, padding: 10, borderRadius: 10, fontSize: 11 },
+  scanner: { flex: 1, borderRadius: 24, borderWidth: 1, alignItems: "center", justifyContent: "center", marginBottom: 18 },
+  stats: { flexDirection: "row", gap: 12, marginBottom: 14 },
+  nav: { position: "absolute", left: 14, right: 14, bottom: 14, minHeight: 72, borderRadius: 20, borderWidth: 1, flexDirection: "row", alignItems: "center", justifyContent: "space-around", paddingHorizontal: 6, zIndex: 50, elevation: 16 },
+  navItem: { minWidth: 56, height: 56, alignItems: "center", justifyContent: "center" }
+});

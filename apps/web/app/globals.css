@@ -1,0 +1,137 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  Velvet Rope — luxury theme with dark/light toggle.
+  Structural VR tokens are RGB channel values so Tailwind's opacity modifiers (/10, /80, etc.) work.
+  Gold, purple, and status colors are fixed and defined directly in tailwind.config.ts.
+*/
+
+:root {
+  /* ─── VR structural tokens (dark default) ─────────────────────── */
+  /* RGB channels only — no rgb() wrapper, so Tailwind can inject alpha */
+  --vr-black:   10 10 15;       /* #0A0A0F — page background         */
+  --vr-surface: 18 18 26;       /* #12121A — sidebar, nav            */
+  --vr-card:    28 28 46;       /* #1C1C2E — cards, panels           */
+  --vr-border:  46 46 74;       /* #2E2E4A — all borders             */
+
+  /* Text (not used with opacity, so plain var is fine) */
+  --vr-text:  #F0EEF8;
+  --vr-muted: #8A8AA8;
+
+  /* ─── Semantic aliases (used by shadcn-compatible components) ──── */
+  --background:          #0A0A0F;
+  --foreground:          #F0EEF8;
+  --card:                #1C1C2E;
+  --card-foreground:     #F0EEF8;
+  --border:              #2E2E4A;
+  --input:               #12121A;
+  --primary:             #f97316;
+  --primary-foreground:  #ffffff;
+  --muted:               #12121A;
+  --muted-foreground:    #8A8AA8;
+  --accent:              #6B4FA0;
+  --accent-foreground:   #F0EEF8;
+  --destructive:         #EF4444;
+  --surface:             #12121A;
+}
+
+/* ─── Light theme overrides ───────────────────────────────────────── */
+html:not(.dark) {
+  --vr-black:   250 250 249;    /* #fafaf9 */
+  --vr-surface: 245 243 255;    /* #f5f3ff */
+  --vr-card:    255 255 255;    /* #ffffff */
+  --vr-border:  229 231 235;    /* #e5e7eb */
+
+  --vr-text:  #111827;
+  --vr-muted: #6b7280;
+
+  --background:          #fafaf9;
+  --foreground:          #111827;
+  --card:                #ffffff;
+  --card-foreground:     #111827;
+  --border:              #e5e7eb;
+  --input:               #f9fafb;
+  --primary:             #f97316;
+  --primary-foreground:  #ffffff;
+  --muted:               #f3f4f6;
+  --muted-foreground:    #6b7280;
+  --accent:              #6B4FA0;
+  --accent-foreground:   #ffffff;
+  --destructive:         #dc2626;
+  --surface:             #f5f3ff;
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+  border-color: rgb(var(--vr-border));
+}
+
+body {
+  margin: 0;
+  background: rgb(var(--vr-black));
+  color: var(--vr-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar          { width: 6px; height: 6px; }
+::-webkit-scrollbar-track    { background: rgb(var(--vr-black)); }
+::-webkit-scrollbar-thumb    { background: rgb(var(--vr-border)); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #f97316; }
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid #f97316;
+  outline-offset: 2px;
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+@keyframes livebar {
+  from { width: 0%; }
+  to   { width: 100%; }
+}
+
+@keyframes fade-in {
+  0%   { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes live-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(249,115,22,0.6); }
+  50%       { box-shadow: 0 0 0 6px rgba(249,115,22,0); }
+}
+
+.animate-live-pulse {
+  animation: live-pulse 1.8s ease-in-out infinite;
+}
+
+.text-gold-gradient {
+  background: linear-gradient(135deg, #f97316, #fb923c);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.hover-glow-gold:hover {
+  box-shadow: 0 0 20px rgba(249,115,22,0.2);
+  border-color: #f97316;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
