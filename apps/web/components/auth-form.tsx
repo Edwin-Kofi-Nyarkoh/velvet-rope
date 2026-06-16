@@ -59,6 +59,10 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
       }
       return api.register({ fullName, email, password, role });
     },
+    onError: (error) => {
+      const err = error as Error & { redirectTo?: string };
+      if (err.redirectTo) router.push(err.redirectTo);
+    },
     onSuccess: (result) => {
       if (mode === "register") {
         sessionStorage.setItem("velvet_pending_email",    email);

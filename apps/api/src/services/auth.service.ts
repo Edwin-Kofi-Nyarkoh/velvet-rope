@@ -11,7 +11,7 @@ import { nanoid } from "nanoid";
 
 const LOCK_AFTER_ATTEMPTS = 5;
 const LOCK_MINUTES = 15;
-const VERIFICATION_MINUTES = 10;
+const VERIFICATION_MINUTES = 30;
 
 function passwordInput(password: string) {
   return `${password}${env.PASSWORD_PEPPER}`;
@@ -39,8 +39,34 @@ export const authService = {
       throw new AppError(403, "ROLE_NOT_ALLOWED", "Admin accounts must be provisioned by an existing admin.");
     }
 
-    const existing = await prisma.user.findUnique({ where: { email: data.email } });
-    if (existing) throw new AppError(409, "EMAIL_EXISTS", "An account with this email already exists.");
+    const existing = await prisma.user.findUnique({
+      where: { email: data.email },
+      include: {
+        emailVerifications: {
+          where: { consumedAt: null },
+          orderBy: { createdAt: "desc" },
+          take: 1
+        }
+      }
+    });
+
+    if (existing) {
+      if (existing.emailVerifiedAt) {
+        throw new AppError(409, "EMAIL_EXISTS", "An account with this email already exists.");
+      }
+      const latestOtp = existing.emailVerifications[0];
+      if (latestOtp && latestOtp.expiresAt > new Date()) {
+        throw new AppError(409, "EMAIL_PENDING_VERIFICATION",
+          "A verification email was already sent. Check your inbox for the OTP code.",
+          { redirectTo: `/verify-otp?email=${encodeURIComponent(data.email)}` }
+        );
+      }
+      const cleanupAt = new Date(existing.createdAt.getTime() + 60 * 60 * 1000);
+      const minutesLeft = Math.max(1, Math.ceil((cleanupAt.getTime() - Date.now()) / 60_000));
+      throw new AppError(409, "AWAITING_CLEANUP",
+        `Your previous registration expired. Please wait about ${minutesLeft} minute${minutesLeft !== 1 ? "s" : ""} then try again.`
+      );
+    }
 
     const passwordHash = await argon2.hash(passwordInput(data.password), {
       type: argon2.argon2id,
@@ -95,7 +121,21 @@ export const authService = {
     const user = await prisma.user.findUnique({ where: { email: data.email }, include: { profile: true } });
     if (!user) throw new AppError(401, "INVALID_CREDENTIALS", "Invalid email or password.");
     if (!user.emailVerifiedAt) {
-      throw new AppError(403, "EMAIL_NOT_VERIFIED", "Please verify your email before logging in.");
+      const latestOtp = await prisma.emailVerification.findFirst({
+        where: { userId: user.id, consumedAt: null },
+        orderBy: { createdAt: "desc" }
+      });
+      if (latestOtp && latestOtp.expiresAt > new Date()) {
+        throw new AppError(403, "EMAIL_NOT_VERIFIED",
+          "Your email is not yet verified. Check your inbox for the OTP code.",
+          { redirectTo: `/verify-otp?email=${encodeURIComponent(user.email)}` }
+        );
+      }
+      const cleanupAt = new Date(user.createdAt.getTime() + 60 * 60 * 1000);
+      const minutesLeft = Math.max(1, Math.ceil((cleanupAt.getTime() - Date.now()) / 60_000));
+      throw new AppError(403, "AWAITING_CLEANUP",
+        `Your verification code expired. Please wait about ${minutesLeft} minute${minutesLeft !== 1 ? "s" : ""} for your account to be removed, then register again.`
+      );
     }
 
     if (user.lockedUntil && user.lockedUntil > new Date()) {

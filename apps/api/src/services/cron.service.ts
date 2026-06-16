@@ -45,23 +45,13 @@ function exclusiveRunner(name: string, task: () => Promise<void>) {
 }
 
 async function cleanupExpiredVerifications() {
-  const expiredVerifications = await prisma.emailVerification.findMany({
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+  await prisma.user.deleteMany({
     where: {
-      consumedAt: null,
-      expiresAt: { lt: new Date() },
-      user: { emailVerifiedAt: null }
-    },
-    select: { userId: true }
+      emailVerifiedAt: null,
+      createdAt: { lt: oneHourAgo }
+    }
   });
-
-  if (expiredVerifications.length) {
-    await prisma.user.deleteMany({
-      where: {
-        id: { in: expiredVerifications.map((verification) => verification.userId) },
-        emailVerifiedAt: null
-      }
-    });
-  }
 }
 
 async function cleanupExpiredPasswordResets() {

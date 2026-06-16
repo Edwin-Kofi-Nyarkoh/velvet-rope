@@ -13,7 +13,7 @@ export class VelvetApiClient {
     if (options.token) headers.set("Authorization", `Bearer ${options.token}`);
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
+    const timeout = setTimeout(() => controller.abort(), 60_000);
     let response: Response;
     try {
       response = await fetch(`${this.baseUrl}${path}`, { ...options, headers, signal: controller.signal });
@@ -31,7 +31,9 @@ export class VelvetApiClient {
 
     if (!response.ok) {
       const message = payload?.error?.message ?? "Request failed";
-      throw new Error(message);
+      const code = payload?.error?.code as string | undefined;
+      const redirectTo = (payload?.error?.details as { redirectTo?: string } | undefined)?.redirectTo;
+      throw Object.assign(new Error(message), { code, redirectTo });
     }
 
     return payload as T;
