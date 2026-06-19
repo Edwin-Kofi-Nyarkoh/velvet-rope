@@ -9,7 +9,7 @@ export class VelvetApiClient {
 
   async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
     const headers = new Headers(options.headers);
-    headers.set("Content-Type", "application/json");
+    if (options.body) headers.set("Content-Type", "application/json");
     if (options.token) headers.set("Authorization", `Bearer ${options.token}`);
 
     const controller = new AbortController();
