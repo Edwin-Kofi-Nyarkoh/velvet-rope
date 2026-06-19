@@ -10,7 +10,7 @@ const slugify = (value: string) =>
     .replace(/(^-|-$)/g, "");
 
 export const eventService = {
-  async list(query: { search?: string; category?: string; city?: string; filter?: string }) {
+  async list(query: { search?: string; category?: string; city?: string; filter?: string; sort?: string }) {
     const now = new Date();
     const tomorrowStart = new Date(now);
     tomorrowStart.setDate(tomorrowStart.getDate() + 1);
@@ -40,15 +40,15 @@ export const eventService = {
       ...(query.filter === "popular" ? { OR: [{ isPopular: true }, { popularityScore: { gt: 0 } }] } : {})
     };
 
+    const byPopularity = query.sort === "popular" || query.filter === "popular";
     const events = await prisma.event.findMany({
       where,
       include: { category: true, ticketTypes: true },
-      orderBy:
-        query.filter === "popular"
-          ? [{ popularityScore: "desc" }, { viewCount: "desc" }, { startsAt: "asc" }]
-          : query.filter === "ongoing" || query.filter === "live"
-            ? [{ popularityScore: "desc" }, { startsAt: "asc" }]
-            : { startsAt: "asc" },
+      orderBy: byPopularity
+        ? [{ popularityScore: "desc" }, { viewCount: "desc" }, { startsAt: "asc" }]
+        : query.filter === "ongoing" || query.filter === "live"
+          ? [{ popularityScore: "desc" }, { startsAt: "asc" }]
+          : [{ startsAt: "asc" }],
       take: 40
     });
 
@@ -82,7 +82,7 @@ export const eventService = {
     const event = await prisma.event.update({
       where: { slug },
       data: { viewCount: { increment: 1 }, popularityScore: { increment: 1 } },
-      include: { category: true, ticketTypes: true, organizer: { include: { profile: true } }, tables: true, seats: true }
+      include: { category: true, ticketTypes: true, organizer: { select: { id: true, email: true, profile: { select: { fullName: true, avatarUrl: true } } } }, tables: true, seats: true }
     }).catch(() => null);
     if (!event) throw new AppError(404, "EVENT_NOT_FOUND", "Event not found.");
     return event;

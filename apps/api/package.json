@@ -5,9 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "prisma generate",
     "start": "tsx src/index.ts",
-    "start:prod": "node --experimental-specifier-resolution=node dist/src/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --ext .ts",
     "prisma:generate": "prisma generate",

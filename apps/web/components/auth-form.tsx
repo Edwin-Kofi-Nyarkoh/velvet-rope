@@ -5,6 +5,7 @@ import { getSession, signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { storeWebAuth } from "@/lib/auth-token";
 import { Button } from "@/components/ui/button";
 
 type AuthMode = "login" | "register";
@@ -65,15 +66,10 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
     },
     onSuccess: (result) => {
       if (mode === "register") {
-        sessionStorage.setItem("velvet_pending_email",    email);
-        sessionStorage.setItem("velvet_pending_password", password);
         router.push(`/verify-otp?email=${encodeURIComponent(email)}`);
         return;
       }
-      localStorage.setItem("velvet_access_token",  result.data.accessToken);
-      localStorage.setItem("velvet_refresh_token", result.data.refreshToken);
-      localStorage.setItem("velvet_user",          JSON.stringify(result.data.user));
-      window.dispatchEvent(new Event("velvet-auth"));
+      storeWebAuth({ accessToken: result.data.accessToken, refreshToken: result.data.refreshToken, user: result.data.user });
       const redirectTo = (result.data as typeof result.data & { redirectTo?: string }).redirectTo;
       router.push(redirectTo ?? (result.data.user.role === "ORGANIZER" ? "/organizer" : "/dashboard"));
     }
@@ -137,8 +133,6 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
           >
             <option value="ATTENDEE">Attendee</option>
             <option value="ORGANIZER">Organizer</option>
-            <option value="STAFF">Staff</option>
-            <option value="VENDOR">Vendor</option>
           </select>
         </>
       )}

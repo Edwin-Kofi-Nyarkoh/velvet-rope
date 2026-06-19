@@ -8,14 +8,19 @@ import {
   CalendarPlus,
   CheckCircle2,
   MessageSquare,
+  Pencil,
   Plus,
+  Send,
+  Star,
+  Trash2,
   Wifi,
   QrCode,
   Share2,
   ShieldCheck,
   Ticket,
   Users,
-  WalletCards
+  WalletCards,
+  X
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { getWebAccessToken } from "@/lib/auth-token";
@@ -215,10 +220,17 @@ export function AttendeeDashboardClient() {
 // ─── Invitations ──────────────────────────────────────────────────────────────
 
 export function MyInvitationsClient() {
+  const queryClient = useQueryClient();
   const invitations = useQuery({
     queryKey: ["my-invitations"],
     queryFn:  async () => api.myInvitations(await token()),
     retry: false
+  });
+
+  const respondMutation = useMutation({
+    mutationFn: ({ invToken, status }: { invToken: string; status: "ACCEPTED" | "DECLINED" }) =>
+      api.respondToInvitation(invToken, status),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["my-invitations"] })
   });
 
   if (invitations.isLoading) return <LoadingGrid />;
@@ -243,14 +255,35 @@ export function MyInvitationsClient() {
           key={String(inv.id)}
           className="flex flex-wrap items-start justify-between gap-4 rounded-xl border border-vr-border bg-vr-card p-5"
         >
-          <div>
+          <div className="min-w-0 flex-1">
             <h3 className="font-semibold text-vr-text">{String(inv.eventTitle)}</h3>
             <p className="mt-1 text-sm text-vr-muted">From {String(inv.sender)}</p>
             {Boolean(inv.message) && <p className="mt-3 text-sm text-vr-text">{String(inv.message)}</p>}
           </div>
-          <Badge variant={inv.status === "ACCEPTED" ? "success" : inv.status === "DECLINED" ? "danger" : "warning"}>
-            {String(inv.status)}
-          </Badge>
+          <div className="flex shrink-0 items-center gap-2">
+            <Badge variant={inv.status === "ACCEPTED" ? "success" : inv.status === "DECLINED" ? "danger" : "warning"}>
+              {String(inv.status)}
+            </Badge>
+            {inv.status === "PENDING" && (
+              <>
+                <Button
+                  size="sm"
+                  disabled={respondMutation.isPending}
+                  onClick={() => respondMutation.mutate({ invToken: String(inv.token), status: "ACCEPTED" })}
+                >
+                  Accept
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={respondMutation.isPending}
+                  onClick={() => respondMutation.mutate({ invToken: String(inv.token), status: "DECLINED" })}
+                >
+                  Decline
+                </Button>
+              </>
+            )}
+          </div>
         </div>
       ))}
     </div>
@@ -285,12 +318,21 @@ export function VipSettingsClient() {
   });
 
   const verifyMutation = useMutation({
-    mutationFn: async () =>
-      api.submitVipVerification(await token(), {
+    mutationFn: async () => {
+      if (evidenceUrl) {
+        try {
+          const parsed = new URL(evidenceUrl);
+          if (parsed.protocol !== "https:") throw new Error("Evidence URL must use HTTPS.");
+        } catch {
+          throw new Error("Evidence URL must be a valid HTTPS address.");
+        }
+      }
+      return api.submitVipVerification(await token(), {
         provider,
         handle,
         evidenceUrl: evidenceUrl || undefined
-      }),
+      });
+    },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["vip-verification"] })
   });
 
@@ -435,35 +477,177 @@ export function OrganizerOverviewClient() {
 // ─── Staff management ─────────────────────────────────────────────────────────
 
 export function StaffManagementClient() {
+  const queryClient = useQueryClient();
+  const [showAdd, setShowAdd]     = useState(false);
+  const [addEmail, setAddEmail]   = useState("");
+  const [addEvent, setAddEvent]   = useState("");
+  const [perms, setPerms]         = useState({ canScanTickets: true, canManageGuests: false, canViewRevenue: false, canManageVendors: false });
+  const [editId, setEditId]       = useState<string | null>(null);
+  const [editPerms, setEditPerms] = useState({ canScanTickets: false, canManageGuests: false, canViewRevenue: false, canManageVendors: false });
+
+  const [showComm, setShowComm]       = useState(false);
+  const [commEvent, setCommEvent]     = useState("");
+  const [commAud,   setCommAud]       = useState<"STAFF" | "VENDORS" | "ALL">("STAFF");
+  const [commSubj,  setCommSubj]      = useState("");
+  const [commBody,  setCommBody]      = useState("");
+
   const staff    = useQuery({ queryKey: ["staff"],          queryFn: async () => api.staff(await token()),          retry: false });
   const messages = useQuery({ queryKey: ["communications"], queryFn: async () => api.communications(await token()), retry: false });
+  const dashboard = useQuery({ queryKey: ["organizer-dashboard"], queryFn: async () => api.organizerDashboard(await token()), retry: false });
 
-  if (staff.isLoading || messages.isLoading) return <LoadingGrid />;
+  const events = ((dashboard.data?.data as AnyRecord)?.events ?? []) as AnyRecord[];
+
+  const addMutation = useMutation({
+    mutationFn: async () => api.addStaff(await token(), { email: addEmail, eventId: addEvent, ...perms }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["staff"] });
+      setShowAdd(false); setAddEmail(""); setAddEvent("");
+    }
+  });
+
+  const editMutation = useMutation({
+    mutationFn: async (id: string) => api.updateStaff(await token(), id, editPerms),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["staff"] }); setEditId(null); }
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: async (id: string) => api.removeStaff(await token(), id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["staff"] })
+  });
+
+  const commMutation = useMutation({
+    mutationFn: async () => api.createCommunication(await token(), { eventId: commEvent, audience: commAud, subject: commSubj, body: commBody }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["communications"] }); setShowComm(false); setCommSubj(""); setCommBody(""); }
+  });
+
+  if (staff.isLoading) return <LoadingGrid />;
 
   const staffRows = (staff.data?.data ?? []) as AnyRecord[];
+  const inp = "h-10 rounded-lg border border-vr-border bg-vr-surface px-3 text-sm text-vr-text placeholder:text-vr-muted outline-none focus:border-vr-gold";
 
   return (
     <div className="grid gap-6">
-      <div className="grid gap-4 md:grid-cols-3">
-        {staffRows.length === 0 ? (
-          <EmptyState icon={Users} title="No staff assigned" description="Add staff members to grant event permissions." className="md:col-span-3" />
-        ) : (
-          staffRows.map((perm) => (
-            <div key={String(perm.id)} className="rounded-xl border border-vr-border bg-vr-card p-5">
-              <h3 className="font-semibold text-vr-text">
-                {String((perm.user as AnyRecord)?.profile ? ((perm.user as AnyRecord).profile as AnyRecord).fullName : (perm.user as AnyRecord)?.email ?? "Staff")}
-              </h3>
-              <p className="mt-1.5 text-sm text-vr-muted">{String((perm.event as AnyRecord)?.title ?? "")}</p>
-              <div className="mt-3 flex gap-2">
-                <Badge variant={perm.canScanTickets ? "success" : "muted"}>Scan</Badge>
-                <Badge variant={perm.canManageGuests ? "success" : "muted"}>Guests</Badge>
-              </div>
+      {/* Add staff */}
+      <div className="rounded-xl border border-vr-border bg-vr-card p-5">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold text-vr-text">Staff members</h2>
+          <Button size="sm" onClick={() => setShowAdd((v) => !v)}>
+            <Plus className="size-4" /> Add staff
+          </Button>
+        </div>
+        {showAdd && (
+          <div className="mt-4 grid gap-3 rounded-xl border border-vr-gold/30 bg-vr-surface p-4 sm:grid-cols-2">
+            <input className={inp} placeholder="Staff email address" value={addEmail} onChange={(e) => setAddEmail(e.target.value)} />
+            <select className={inp} value={addEvent} onChange={(e) => setAddEvent(e.target.value)}>
+              <option value="">Select event</option>
+              {events.map((ev) => <option key={String(ev.id)} value={String(ev.id)}>{String(ev.title)}</option>)}
+            </select>
+            <div className="flex flex-wrap gap-3 sm:col-span-2 text-sm text-vr-muted">
+              {(["canScanTickets","canManageGuests","canViewRevenue","canManageVendors"] as const).map((k) => (
+                <label key={k} className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" className="accent-vr-gold" checked={perms[k]} onChange={(e) => setPerms((p) => ({ ...p, [k]: e.target.checked }))} />
+                  {k.replace("can","").replace(/([A-Z])/g," $1").trim()}
+                </label>
+              ))}
             </div>
-          ))
+            {addMutation.isError && <p className="sm:col-span-2 text-sm text-vr-danger">{addMutation.error.message}</p>}
+            <div className="flex gap-2 sm:col-span-2">
+              <Button disabled={!addEmail || !addEvent || addMutation.isPending} onClick={() => addMutation.mutate()}>
+                {addMutation.isPending ? "Adding…" : "Add staff"}
+              </Button>
+              <Button variant="ghost" onClick={() => setShowAdd(false)}>Cancel</Button>
+            </div>
+          </div>
         )}
+
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          {staffRows.length === 0 ? (
+            <EmptyState icon={Users} title="No staff assigned" description="Add staff members to grant event permissions." className="md:col-span-3" />
+          ) : (
+            staffRows.map((perm) => (
+              <div key={String(perm.id)} className="rounded-xl border border-vr-border bg-vr-surface p-4">
+                {editId === String(perm.id) ? (
+                  <div className="grid gap-2">
+                    {(["canScanTickets","canManageGuests","canViewRevenue","canManageVendors"] as const).map((k) => (
+                      <label key={k} className="flex items-center gap-2 text-sm text-vr-text cursor-pointer">
+                        <input type="checkbox" className="accent-vr-gold" checked={editPerms[k]} onChange={(e) => setEditPerms((p) => ({ ...p, [k]: e.target.checked }))} />
+                        {k.replace("can","").replace(/([A-Z])/g," $1").trim()}
+                      </label>
+                    ))}
+                    <div className="mt-2 flex gap-2">
+                      <Button size="sm" onClick={() => editMutation.mutate(String(perm.id))}>Save</Button>
+                      <Button size="sm" variant="ghost" onClick={() => setEditId(null)}>Cancel</Button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <h3 className="font-semibold text-vr-text">
+                      {String((perm.user as AnyRecord)?.profile ? ((perm.user as AnyRecord).profile as AnyRecord).fullName : (perm.user as AnyRecord)?.email ?? "Staff")}
+                    </h3>
+                    <p className="mt-1 text-sm text-vr-muted">{String((perm.event as AnyRecord)?.title ?? "")}</p>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      <Badge variant={perm.canScanTickets ? "success" : "muted"}>Scan</Badge>
+                      <Badge variant={perm.canManageGuests ? "success" : "muted"}>Guests</Badge>
+                      <Badge variant={perm.canViewRevenue ? "success" : "muted"}>Revenue</Badge>
+                      <Badge variant={perm.canManageVendors ? "success" : "muted"}>Vendors</Badge>
+                    </div>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        className="flex items-center gap-1 text-xs text-vr-gold hover:underline"
+                        onClick={() => { setEditId(String(perm.id)); setEditPerms({ canScanTickets: Boolean(perm.canScanTickets), canManageGuests: Boolean(perm.canManageGuests), canViewRevenue: Boolean(perm.canViewRevenue), canManageVendors: Boolean(perm.canManageVendors) }); }}
+                      >
+                        <Pencil className="size-3" /> Edit
+                      </button>
+                      <button
+                        className="flex items-center gap-1 text-xs text-vr-danger hover:underline"
+                        onClick={() => removeMutation.mutate(String(perm.id))}
+                      >
+                        <Trash2 className="size-3" /> Remove
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
-      <CommunicationPanel messages={(messages.data?.data ?? []) as AnyRecord[]} />
+      {/* Send communication */}
+      <div className="rounded-xl border border-vr-border bg-vr-card p-5">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold text-vr-text">Staff &amp; vendor communications</h2>
+          <Button size="sm" variant="secondary" onClick={() => setShowComm((v) => !v)}>
+            <Send className="size-4" /> New message
+          </Button>
+        </div>
+        {showComm && (
+          <div className="mt-4 grid gap-3 rounded-xl border border-vr-gold/30 bg-vr-surface p-4 sm:grid-cols-2">
+            <select className={inp} value={commEvent} onChange={(e) => setCommEvent(e.target.value)}>
+              <option value="">Select event</option>
+              {events.map((ev) => <option key={String(ev.id)} value={String(ev.id)}>{String(ev.title)}</option>)}
+            </select>
+            <select className={inp} value={commAud} onChange={(e) => setCommAud(e.target.value as typeof commAud)}>
+              <option value="STAFF">Staff only</option>
+              <option value="VENDORS">Vendors only</option>
+              <option value="ALL">Everyone</option>
+            </select>
+            <input className={`${inp} sm:col-span-2`} placeholder="Subject" value={commSubj} onChange={(e) => setCommSubj(e.target.value)} />
+            <textarea className="sm:col-span-2 min-h-24 rounded-lg border border-vr-border bg-vr-surface p-3 text-sm text-vr-text placeholder:text-vr-muted outline-none focus:border-vr-gold resize-y" placeholder="Message body…" value={commBody} onChange={(e) => setCommBody(e.target.value)} />
+            {commMutation.isError && <p className="sm:col-span-2 text-sm text-vr-danger">{commMutation.error.message}</p>}
+            {commMutation.isSuccess && <p className="sm:col-span-2 text-sm text-vr-success">Message sent.</p>}
+            <div className="flex gap-2 sm:col-span-2">
+              <Button disabled={!commEvent || !commSubj || !commBody || commMutation.isPending} onClick={() => commMutation.mutate()}>
+                {commMutation.isPending ? "Sending…" : "Send message"}
+              </Button>
+              <Button variant="ghost" onClick={() => setShowComm(false)}>Cancel</Button>
+            </div>
+          </div>
+        )}
+        <div className="mt-4">
+          <CommunicationPanel messages={(messages.data?.data ?? []) as AnyRecord[]} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -471,9 +655,28 @@ export function StaffManagementClient() {
 // ─── Vendor management ────────────────────────────────────────────────────────
 
 export function VendorManagementClient() {
+  const queryClient  = useQueryClient();
+  const [showAdd, setShowAdd]         = useState(false);
+  const [addEmail, setAddEmail]       = useState("");
+  const [addEvent, setAddEvent]       = useState("");
+  const [addBiz, setAddBiz]           = useState("");
+  const [addCat, setAddCat]           = useState("");
+
   const vendors      = useQuery({ queryKey: ["vendors"],             queryFn: async () => api.vendors(await token()),             retry: false });
   const transactions = useQuery({ queryKey: ["vendor-transactions"], queryFn: async () => api.vendorTransactions(await token()), retry: false });
-  const queryClient  = useQueryClient();
+  const dashboard    = useQuery({ queryKey: ["organizer-dashboard"], queryFn: async () => api.organizerDashboard(await token()), retry: false });
+
+  const events = ((dashboard.data?.data as AnyRecord)?.events ?? []) as AnyRecord[];
+
+  const addMutation = useMutation({
+    mutationFn: async () => api.addVendor(await token(), { email: addEmail, eventId: addEvent || undefined, businessName: addBiz, category: addCat }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["vendors"] }); setShowAdd(false); setAddEmail(""); setAddBiz(""); setAddCat(""); setAddEvent(""); }
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: async (id: string) => api.removeVendor(await token(), id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["vendors"] })
+  });
 
   const confirmMutation = useMutation({
     mutationFn: async (id: string) => api.confirmVendorTransaction(await token(), id),
@@ -482,17 +685,57 @@ export function VendorManagementClient() {
 
   if (vendors.isLoading || transactions.isLoading) return <LoadingGrid />;
 
+  const inp = "h-10 rounded-lg border border-vr-border bg-vr-surface px-3 text-sm text-vr-text placeholder:text-vr-muted outline-none focus:border-vr-gold";
+
   return (
     <div className="grid gap-6">
-      <div className="grid gap-4 md:grid-cols-2">
-        {((vendors.data?.data ?? []) as AnyRecord[]).map((vendor) => (
-          <div key={String(vendor.id)} className="rounded-xl border border-vr-border bg-vr-card p-5">
-            <h3 className="font-semibold text-vr-text">{String(vendor.businessName)}</h3>
-            <p className="mt-1.5 text-sm text-vr-muted">
-              {String(vendor.category)} · {String((vendor.event as AnyRecord)?.title ?? "Unassigned")}
-            </p>
+      <div className="rounded-xl border border-vr-border bg-vr-card p-5">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold text-vr-text">Vendors</h2>
+          <Button size="sm" onClick={() => setShowAdd((v) => !v)}>
+            <Plus className="size-4" /> Add vendor
+          </Button>
+        </div>
+        {showAdd && (
+          <div className="mt-4 grid gap-3 rounded-xl border border-vr-gold/30 bg-vr-surface p-4 sm:grid-cols-2">
+            <input className={inp} placeholder="Vendor email address" value={addEmail} onChange={(e) => setAddEmail(e.target.value)} />
+            <select className={inp} value={addEvent} onChange={(e) => setAddEvent(e.target.value)}>
+              <option value="">Assign to event (optional)</option>
+              {events.map((ev) => <option key={String(ev.id)} value={String(ev.id)}>{String(ev.title)}</option>)}
+            </select>
+            <input className={inp} placeholder="Business name" value={addBiz} onChange={(e) => setAddBiz(e.target.value)} />
+            <input className={inp} placeholder="Category (e.g. Food, Bar)" value={addCat} onChange={(e) => setAddCat(e.target.value)} />
+            {addMutation.isError && <p className="sm:col-span-2 text-sm text-vr-danger">{addMutation.error.message}</p>}
+            <div className="flex gap-2 sm:col-span-2">
+              <Button disabled={!addEmail || !addBiz || !addCat || addMutation.isPending} onClick={() => addMutation.mutate()}>
+                {addMutation.isPending ? "Adding…" : "Add vendor"}
+              </Button>
+              <Button variant="ghost" onClick={() => setShowAdd(false)}>Cancel</Button>
+            </div>
           </div>
-        ))}
+        )}
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {((vendors.data?.data ?? []) as AnyRecord[]).length === 0 ? (
+            <EmptyState icon={Users} title="No vendors assigned" description="Add vendors to manage cashless in-event transactions." className="md:col-span-2" />
+          ) : (
+            ((vendors.data?.data ?? []) as AnyRecord[]).map((vendor) => (
+              <div key={String(vendor.id)} className="flex items-start justify-between gap-3 rounded-xl border border-vr-border bg-vr-surface p-4">
+                <div className="min-w-0">
+                  <h3 className="font-semibold text-vr-text">{String(vendor.businessName)}</h3>
+                  <p className="mt-1 text-sm text-vr-muted">
+                    {String(vendor.category)} · {String((vendor.event as AnyRecord)?.title ?? "Unassigned")}
+                  </p>
+                </div>
+                <button
+                  className="flex shrink-0 items-center gap-1 text-xs text-vr-danger hover:underline"
+                  onClick={() => removeMutation.mutate(String(vendor.id))}
+                >
+                  <Trash2 className="size-3" /> Remove
+                </button>
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       <Panel title="Cashless in-event transactions">
@@ -529,10 +772,24 @@ export function VendorManagementClient() {
 // ─── Seating management ───────────────────────────────────────────────────────
 
 export function SeatingManagementClient() {
+  const queryClient = useQueryClient();
+  const [assignSeatId,   setAssignSeatId]   = useState("");
+  const [assignTicketId, setAssignTicketId] = useState("");
+
   const seating = useQuery({
     queryKey: ["organizer-seating"],
     queryFn:  async () => api.organizerSeating(await token()),
     retry: false
+  });
+  const attendees = useQuery({
+    queryKey: ["organizer-attendees"],
+    queryFn:  async () => api.organizerAttendees(await token()),
+    retry: false
+  });
+
+  const assignMutation = useMutation({
+    mutationFn: async () => api.assignSeat(await token(), { seatId: assignSeatId, ticketId: assignTicketId }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["organizer-seating"] }); setAssignSeatId(""); setAssignTicketId(""); }
   });
 
   if (seating.isLoading) return <LoadingGrid />;
@@ -540,6 +797,7 @@ export function SeatingManagementClient() {
 
   const events = (seating.data?.data ?? []) as AnyRecord[];
   const event  = events[0];
+  const allAttendees = (attendees.data?.data ?? []) as AnyRecord[];
 
   if (!event) {
     return (
@@ -551,32 +809,60 @@ export function SeatingManagementClient() {
     );
   }
 
+  const seats        = (event.seats  ?? []) as AnyRecord[];
+  const tables       = (event.tables ?? []) as AnyRecord[];
+  const unassigned   = seats.filter((s) => s.status !== "ASSIGNED");
+  const inp = "h-10 rounded-lg border border-vr-border bg-vr-surface px-3 text-sm text-vr-text placeholder:text-vr-muted outline-none focus:border-vr-gold";
+
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
       {/* Seat grid */}
-      <div className="grid grid-cols-6 gap-2 rounded-xl border border-vr-border bg-vr-card p-5 sm:grid-cols-8 lg:grid-cols-10">
-        {((event.seats ?? []) as AnyRecord[]).map((seat) => (
-          <div
-            key={String(seat.id)}
-            className={`flex aspect-square flex-col items-center justify-center rounded-lg border text-[10px] font-semibold transition ${
-              seat.status === "ASSIGNED"
-                ? "border-vr-gold/50 bg-vr-gold/10 text-vr-gold"
-                : "border-vr-border bg-vr-surface text-vr-muted"
-            }`}
-          >
-            <span>{String(seat.label)}</span>
-            {Boolean(seat.attendee) && (
-              <span className="mt-0.5 max-w-full truncate px-0.5 text-[8px]">
-                {String(seat.attendee).split(" ")[0]}
-              </span>
-            )}
+      <div className="grid gap-4">
+        <div className="grid grid-cols-6 gap-2 rounded-xl border border-vr-border bg-vr-card p-5 sm:grid-cols-8 lg:grid-cols-10">
+          {seats.map((seat) => (
+            <div
+              key={String(seat.id)}
+              className={`flex aspect-square flex-col items-center justify-center rounded-lg border text-[10px] font-semibold transition ${
+                seat.status === "ASSIGNED"
+                  ? "border-vr-gold/50 bg-vr-gold/10 text-vr-gold"
+                  : "border-vr-border bg-vr-surface text-vr-muted"
+              }`}
+            >
+              <span>{String(seat.label)}</span>
+              {Boolean(seat.attendee) && (
+                <span className="mt-0.5 max-w-full truncate px-0.5 text-[8px]">
+                  {String(seat.attendee).split(" ")[0]}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Assign seat */}
+        {unassigned.length > 0 && (
+          <div className="rounded-xl border border-vr-border bg-vr-card p-5">
+            <h2 className="mb-4 font-semibold text-vr-text">Assign a seat</h2>
+            <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
+              <select className={inp} value={assignSeatId} onChange={(e) => setAssignSeatId(e.target.value)}>
+                <option value="">Select seat</option>
+                {unassigned.map((s) => <option key={String(s.id)} value={String(s.id)}>{String(s.label)}</option>)}
+              </select>
+              <select className={inp} value={assignTicketId} onChange={(e) => setAssignTicketId(e.target.value)}>
+                <option value="">Select attendee ticket</option>
+                {allAttendees.map((a) => <option key={String(a.id)} value={String(a.id)}>{String(a.attendeeName)} — {String(a.eventTitle)}</option>)}
+              </select>
+              <Button disabled={!assignSeatId || !assignTicketId || assignMutation.isPending} onClick={() => assignMutation.mutate()}>
+                {assignMutation.isPending ? "Saving…" : "Assign"}
+              </Button>
+            </div>
+            {assignMutation.isError && <p className="mt-2 text-sm text-vr-danger">{assignMutation.error.message}</p>}
           </div>
-        ))}
+        )}
       </div>
 
       {/* Table summary */}
       <Panel title={String(event.title)}>
-        {((event.tables ?? []) as AnyRecord[]).map((table) => (
+        {tables.map((table) => (
           <div key={String(table.id)} className="rounded-lg bg-vr-surface px-3 py-2.5 text-sm">
             <p className="font-medium text-vr-text">{String(table.name)}</p>
             <p className="mt-0.5 text-xs text-vr-muted">
@@ -890,10 +1176,30 @@ function CommunicationPanel({ messages }: { messages: AnyRecord[] }) {
 // ─── Organizer events list ─────────────────────────────────────────────────────
 
 export function OrganizerEventsClient() {
+  const queryClient = useQueryClient();
+  const [editId,   setEditId]   = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<Record<string, string | boolean>>({});
+
   const dashboard = useQuery({
     queryKey: ["organizer-dashboard"],
     queryFn:  async () => api.organizerDashboard(await token()),
     retry: false
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async (id: string) => api.updateEvent(await token(), id, editForm),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["organizer-dashboard"] }); setEditId(null); }
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => api.deleteEvent(await token(), id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["organizer-dashboard"] })
+  });
+
+  const popularMutation = useMutation({
+    mutationFn: async ({ id, isPopular }: { id: string; isPopular: boolean }) =>
+      api.updateEventPopularity(await token(), id, { isPopular }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["organizer-dashboard"] })
   });
 
   const events = (dashboard.data?.data?.events ?? []) as AnyRecord[];
@@ -913,22 +1219,67 @@ export function OrganizerEventsClient() {
     />
   );
 
+  const inp = "h-10 rounded-lg border border-vr-border bg-vr-surface px-3 text-sm text-vr-text placeholder:text-vr-muted outline-none focus:border-vr-gold";
+
   return (
     <div className="grid gap-3">
       {events.map((event) => (
-        <div
-          key={String(event.id)}
-          className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-vr-border bg-vr-card p-5 transition-all hover:border-vr-gold/30"
-        >
-          <div className="min-w-0">
-            <p className="truncate font-semibold text-vr-text">{String(event.title)}</p>
-            <p className="mt-1 text-sm text-vr-muted">
-              {new Date(String(event.startsAt)).toLocaleDateString()} ·{" "}
-              <span className="text-vr-gold">{String(event.ticketsSold)} sold</span> ·{" "}
-              {String(event.checkIns)} checked in
-            </p>
-          </div>
-          <EventStatusBadge status={String(event.status)} />
+        <div key={String(event.id)} className="rounded-xl border border-vr-border bg-vr-card p-5 transition-all hover:border-vr-gold/30">
+          {editId === String(event.id) ? (
+            <div className="grid gap-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <input className={inp} placeholder="Title" defaultValue={String(event.title)} onChange={(e) => setEditForm((f) => ({ ...f, title: e.target.value }))} />
+                <input className={inp} placeholder="Venue name" defaultValue={String(event.venueName ?? "")} onChange={(e) => setEditForm((f) => ({ ...f, venueName: e.target.value }))} />
+                <input className={inp} placeholder="City" defaultValue={String(event.city ?? "")} onChange={(e) => setEditForm((f) => ({ ...f, city: e.target.value }))} />
+                <input className={inp} placeholder="Country" defaultValue={String(event.country ?? "")} onChange={(e) => setEditForm((f) => ({ ...f, country: e.target.value }))} />
+                <input className={`${inp} sm:col-span-2`} placeholder="Banner URL" defaultValue={String(event.bannerUrl ?? "")} onChange={(e) => setEditForm((f) => ({ ...f, bannerUrl: e.target.value }))} />
+              </div>
+              {updateMutation.isError && <p className="text-sm text-vr-danger">{updateMutation.error.message}</p>}
+              <div className="flex gap-2">
+                <Button size="sm" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate(String(event.id))}>
+                  {updateMutation.isPending ? "Saving…" : "Save changes"}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setEditId(null)}>Cancel</Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="min-w-0">
+                <p className="truncate font-semibold text-vr-text">{String(event.title)}</p>
+                <p className="mt-1 text-sm text-vr-muted">
+                  {new Date(String(event.startsAt)).toLocaleDateString()} ·{" "}
+                  <span className="text-vr-gold">{String(event.ticketsSold)} sold</span> ·{" "}
+                  {String(event.checkIns)} checked in
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <EventStatusBadge status={String(event.status)} />
+                <button
+                  title={event.isPopular ? "Remove popular" : "Mark popular"}
+                  className={`flex size-8 items-center justify-center rounded-lg border transition ${event.isPopular ? "border-vr-gold/50 text-vr-gold" : "border-vr-border text-vr-muted hover:text-vr-gold"}`}
+                  onClick={() => popularMutation.mutate({ id: String(event.id), isPopular: !event.isPopular })}
+                >
+                  <Star className="size-4" />
+                </button>
+                <button
+                  title="Edit event"
+                  className="flex size-8 items-center justify-center rounded-lg border border-vr-border text-vr-muted transition hover:border-vr-gold/40 hover:text-vr-gold"
+                  onClick={() => { setEditId(String(event.id)); setEditForm({}); }}
+                >
+                  <Pencil className="size-4" />
+                </button>
+                {event.status !== "CANCELLED" && (
+                  <button
+                    title="Cancel event"
+                    className="flex size-8 items-center justify-center rounded-lg border border-vr-border text-vr-muted transition hover:border-vr-danger/40 hover:text-vr-danger"
+                    onClick={() => { if (confirm("Cancel this event?")) deleteMutation.mutate(String(event.id)); }}
+                  >
+                    <X className="size-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -1177,6 +1528,73 @@ export function OrganizerTicketTypesClient() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Attendee order history ─────────────────────────────────────────────────
+
+export function OrdersClient() {
+  const ordersQ = useQuery({
+    queryKey: ["orders"],
+    queryFn:  async () => api.orders(await token()),
+    retry: false
+  });
+
+  const orders = (ordersQ.data?.data ?? []) as AnyRecord[];
+
+  if (ordersQ.isPending) return <LoadingGrid cols={1} />;
+  if (ordersQ.isError) return <ErrorState message={ordersQ.error.message} onRetry={ordersQ.refetch} />;
+  if (orders.length === 0) return (
+    <EmptyState
+      icon={Ticket}
+      title="No orders yet"
+      description="Tickets you purchase will appear here."
+      action={{ label: "Browse events", href: "/events" }}
+    />
+  );
+
+  return (
+    <div className="grid gap-3">
+      {orders.map((order) => {
+        const tickets  = (order.tickets as AnyRecord[] | undefined) ?? [];
+        const event    = order.event as AnyRecord | undefined;
+        const total    = Number(order.totalAmount ?? 0);
+        const currency = String(order.currency ?? "GHS");
+        const status   = String(order.status ?? "");
+        const paid     = new Date(String(order.createdAt)).toLocaleDateString();
+
+        return (
+          <div key={String(order.id)} className="rounded-xl border border-vr-border bg-vr-card p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate font-semibold text-vr-text">
+                  {event ? String(event.title) : "Event"}
+                </p>
+                <p className="mt-1 text-sm text-vr-muted">
+                  {paid} · {tickets.length} ticket{tickets.length !== 1 ? "s" : ""} ·{" "}
+                  <span className="text-vr-gold font-medium">
+                    {currency} {total.toFixed(2)}
+                  </span>
+                </p>
+              </div>
+              <Badge variant={status === "CONFIRMED" ? "success" : status === "PENDING" ? "warning" : "default"}>
+                {status}
+              </Badge>
+            </div>
+
+            {tickets.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {tickets.map((t) => (
+                  <span key={String(t.id)} className="rounded-md border border-vr-border px-2 py-1 text-xs text-vr-muted">
+                    {String(t.ticketType ?? t.type ?? "Ticket")} #{String(t.id).slice(-6).toUpperCase()}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

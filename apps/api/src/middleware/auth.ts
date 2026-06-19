@@ -8,6 +8,7 @@ export type AuthUser = {
   id: string;
   email: string;
   role: Role;
+  tv: number;
 };
 
 export type AuthRequest = Request & {

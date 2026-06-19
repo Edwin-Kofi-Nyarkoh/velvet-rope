@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { FlatList, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as SecureStore from "expo-secure-store";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Calendar, Home, LogIn, MessageSquare, Moon, QrCode, Search, Settings, ShieldCheck, Sun, Ticket, Users, WalletCards, Wifi } from "lucide-react-native";
+import { Bell, Calendar, Check, Home, LogIn, MessageSquare, Moon, QrCode, Search, Settings, ShieldCheck, ShoppingBag, Sun, Ticket, Users, WalletCards, Wifi, X as XIcon } from "lucide-react-native";
 import { usePaystack } from "react-native-paystack-webview";
 import type { EventSummary } from "@velvet-rope/shared";
 import { Button, Card, Screen, Skeleton, Stat } from "./components";
@@ -20,39 +21,57 @@ const filters = [
 ];
 
 async function clearMobileAuth() {
-  await AsyncStorage.multiRemove(["velvet_access_token", "velvet_refresh_token", "velvet_user"]);
+  const token = await SecureStore.getItemAsync("velvet_access_token").catch(() => null);
+  if (token) api.logout(token).catch(() => undefined);
+  await Promise.all([
+    SecureStore.deleteItemAsync("velvet_access_token"),
+    SecureStore.deleteItemAsync("velvet_refresh_token"),
+    SecureStore.deleteItemAsync("velvet_user")
+  ]);
+}
+
+async function storeMobileAuth(tokens: { accessToken: string; refreshToken: string; user: unknown }) {
+  await Promise.all([
+    SecureStore.setItemAsync("velvet_access_token", tokens.accessToken),
+    SecureStore.setItemAsync("velvet_refresh_token", tokens.refreshToken),
+    SecureStore.setItemAsync("velvet_user", JSON.stringify(tokens.user))
+  ]);
+}
+
+function authError(message: string): Error {
+  return Object.assign(new Error(message), { status: 401 });
 }
 
 async function refreshMobileAccessToken() {
-  const refreshToken = await AsyncStorage.getItem("velvet_refresh_token");
+  const refreshToken = await SecureStore.getItemAsync("velvet_refresh_token");
   if (!refreshToken) {
     await clearMobileAuth();
-    throw new Error("Your session has expired. Please log in again.");
+    throw authError("Your session has expired. Please log in again.");
   }
   try {
     const result = await api.refresh(refreshToken);
-    await AsyncStorage.multiSet([
-      ["velvet_access_token", result.data.accessToken],
-      ["velvet_refresh_token", result.data.refreshToken],
-      ["velvet_user", JSON.stringify(result.data.user)]
-    ]);
+    await storeMobileAuth({ accessToken: result.data.accessToken, refreshToken: result.data.refreshToken, user: result.data.user });
     return result.data.accessToken;
   } catch {
     await clearMobileAuth();
-    throw new Error("Your session has expired. Please log in again.");
+    throw authError("Your session has expired. Please log in again.");
   }
 }
 
 async function withMobileAuth<T>(request: (token: string) => Promise<T>) {
-  const token = await AsyncStorage.getItem("velvet_access_token");
-  if (!token) throw new Error("Please log in first.");
+  const token = await SecureStore.getItemAsync("velvet_access_token");
+  if (!token) throw authError("Please log in to continue.");
   try {
     return await request(token);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    if (!/session|expired|invalid|auth/i.test(message)) throw error;
+    const status = (error as Error & { status?: number }).status;
+    if (status !== 401) throw error;
     return request(await refreshMobileAccessToken());
   }
+}
+
+function isAuthError(error: unknown): boolean {
+  return (error as Error & { status?: number })?.status === 401;
 }
 
 export function AuthScreen({ go, onRole, theme, notify }: { go: (screen: string) => void; onRole: (role: string | null) => void; theme: AppTheme; notify: Notify }) {
@@ -65,11 +84,7 @@ export function AuthScreen({ go, onRole, theme, notify }: { go: (screen: string)
   const loginMutation = useMutation({
     mutationFn: () => api.login({ email, password }),
     onSuccess: async (result) => {
-      await AsyncStorage.multiSet([
-        ["velvet_access_token", result.data.accessToken],
-        ["velvet_refresh_token", result.data.refreshToken],
-        ["velvet_user", JSON.stringify(result.data.user)]
-      ]);
+      await storeMobileAuth({ accessToken: result.data.accessToken, refreshToken: result.data.refreshToken, user: result.data.user });
       notify("You are signed in and ready to manage tickets.", "Welcome back", "success");
       onRole(result.data.user.role);
       go(["ORGANIZER", "ADMIN", "SUPER_ADMIN"].includes(result.data.user.role) ? "organizer" : "home");
@@ -80,7 +95,7 @@ export function AuthScreen({ go, onRole, theme, notify }: { go: (screen: string)
   const registerMutation = useMutation({
     mutationFn: () => api.register({ fullName, email, password, role: "ATTENDEE" }),
     onSuccess: () => {
-      notify("Enter the code we sent to your email. It expires in 10 minutes.", "Verify your email", "success");
+      notify("Enter the code we sent to your email. It expires in 30 minutes.", "Verify your email", "success");
       setMode("verify");
     },
     onError: (error) => notify(error.message, "Account could not be created", "error")
@@ -89,11 +104,7 @@ export function AuthScreen({ go, onRole, theme, notify }: { go: (screen: string)
   const verifyMutation = useMutation({
     mutationFn: () => api.verifyEmail({ email, code }),
     onSuccess: async (result) => {
-      await AsyncStorage.multiSet([
-        ["velvet_access_token", result.data.accessToken],
-        ["velvet_refresh_token", result.data.refreshToken],
-        ["velvet_user", JSON.stringify(result.data.user)]
-      ]);
+      await storeMobileAuth({ accessToken: result.data.accessToken, refreshToken: result.data.refreshToken, user: result.data.user });
       notify("Your account has been verified.", "Account ready", "success");
       onRole(result.data.user.role);
       go("home");
@@ -108,7 +119,7 @@ export function AuthScreen({ go, onRole, theme, notify }: { go: (screen: string)
       <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
         <Text style={[styles.title, { color: theme.colors.ink }]}>{mode === "login" ? "Welcome back" : mode === "register" ? "Create account" : "Verify email"}</Text>
         <Text style={[styles.copy, { color: theme.colors.slate }]}>
-          {mode === "verify" ? "Enter the 6-digit code sent to your email. It expires in 10 minutes." : "Use the same secure account across web, Android, and iOS."}
+          {mode === "verify" ? "Enter the 6-digit code sent to your email. It expires in 30 minutes." : "Use the same secure account across web, Android, and iOS."}
         </Text>
         {mode === "register" && <TextInput style={inputStyle(theme)} placeholder="Full name" placeholderTextColor={theme.colors.slate} value={fullName} onChangeText={setFullName} />}
         <TextInput style={inputStyle(theme)} placeholder="Email" placeholderTextColor={theme.colors.slate} autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} />
@@ -196,6 +207,7 @@ export function HomeFeedScreen({
                   : <Moon size={16} color={theme.colors.gold} />
                 }
               </Pressable>
+              {isAuthenticated && <BellButton go={go} theme={theme} />}
               {!isAuthenticated && (
                 <Pressable style={[styles.loginButton, { backgroundColor: theme.colors.gold }]} onPress={() => go("auth")}>
                   <LogIn size={16} color="#ffffff" />
@@ -308,7 +320,7 @@ export function EventDetailsScreen({ slug, go, theme, isAuthenticated, notify }:
 
   const checkoutMutation = useMutation({
     mutationFn: async () => {
-      if (!paystackPublicKey) throw new Error("Paystack public key is missing from the mobile environment.");
+      if (!paystackPublicKey) throw new Error("Payment is not configured. Please contact support.");
       if (!event) throw new Error("Event is still loading.");
       if (!selectedItems.length) throw new Error("Select at least one ticket.");
       return withMobileAuth((token) => api.initializePayment(token, { eventId: event.id, client: "mobile_webview", items: selectedItems.map((item) => ({ ticketTypeId: item.ticketTypeId, quantity: item.quantity })) }));
@@ -347,7 +359,7 @@ export function EventDetailsScreen({ slug, go, theme, isAuthenticated, notify }:
       });
     },
     onError: (error) => {
-      if (/log in|session/i.test(error.message)) {
+      if (isAuthError(error)) {
         notify("Please log in before buying tickets.", "Login required", "error");
         go("auth");
         return;
@@ -368,7 +380,7 @@ export function EventDetailsScreen({ slug, go, theme, isAuthenticated, notify }:
       notify("Invitation sent to the email address.", "Invitation", "success");
     },
     onError: (error) => {
-      if (/log in|session/i.test(error.message)) {
+      if (isAuthError(error)) {
         notify("Please log in before sending invitations.", "Login required", "error");
         go("auth");
         return;
@@ -528,7 +540,7 @@ export function TicketScreen({ go, theme, notify }: { go: (screen: string) => vo
             <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Tickets could not load</Text>
             <Text style={[styles.copy, { color: theme.colors.slate }]}>{ticketsQuery.error.message}</Text>
             <View style={{ height: 12 }} />
-            <Button theme={theme} label={/log in|session/i.test(ticketsQuery.error.message) ? "Log in" : "Try again"} onPress={() => (/log in|session/i.test(ticketsQuery.error.message) ? go("auth") : ticketsQuery.refetch())} />
+            <Button theme={theme} label={isAuthError(ticketsQuery.error) ? "Log in" : "Try again"} onPress={() => (isAuthError(ticketsQuery.error) ? go("auth") : ticketsQuery.refetch())} />
           </Card>
         </ScrollView>
       ) : (
@@ -552,8 +564,7 @@ export function TicketScreen({ go, theme, notify }: { go: (screen: string) => vo
               <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>{item.eventTitle}</Text>
               <Text style={[styles.muted, { color: theme.colors.slate }]}>{item.ticketType} - {item.status}</Text>
               {item.seat && <Text style={[styles.muted, { color: theme.colors.slate }]}>Seat {item.seat.table ?? ""} {item.seat.label} - {item.seat.zone ?? "Main"}</Text>}
-              {item.nfcToken && <Text style={[styles.qrPayload, { color: theme.colors.slate, backgroundColor: theme.colors.muted }]}>NFC: {item.nfcToken}</Text>}
-              <Text style={[styles.qrPayload, { color: theme.colors.slate, backgroundColor: theme.colors.muted }]}>{item.qrCodePayload}</Text>
+              {item.nfcToken && <Text style={[styles.qrPayload, { color: theme.colors.slate, backgroundColor: theme.colors.muted }]}>NFC ••••{item.nfcToken.slice(-4)}</Text>}
             </Card>
           )}
         />
@@ -563,10 +574,18 @@ export function TicketScreen({ go, theme, notify }: { go: (screen: string) => vo
 }
 
 export function InvitationsScreen({ go, theme }: { go: (screen: string) => void; theme: AppTheme }) {
+  const queryClient = useQueryClient();
+
   const invitationsQuery = useQuery({
     queryKey: ["my-invitations"],
     queryFn: async () => withMobileAuth((token) => api.myInvitations(token)),
     retry: false
+  });
+
+  const respondMutation = useMutation({
+    mutationFn: ({ invToken, status }: { invToken: string; status: "ACCEPTED" | "DECLINED" }) =>
+      api.respondToInvitation(invToken, status),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["my-invitations"] })
   });
 
   return (
@@ -579,7 +598,7 @@ export function InvitationsScreen({ go, theme }: { go: (screen: string) => void;
           <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Invitations could not load</Text>
           <Text style={[styles.copy, { color: theme.colors.slate }]}>{invitationsQuery.error.message}</Text>
           <View style={{ height: 12 }} />
-          <Button theme={theme} label={/log in|session/i.test(invitationsQuery.error.message) ? "Log in" : "Try again"} onPress={() => (/log in|session/i.test(invitationsQuery.error.message) ? go("auth") : invitationsQuery.refetch())} />
+          <Button theme={theme} label={isAuthError(invitationsQuery.error) ? "Log in" : "Try again"} onPress={() => (isAuthError(invitationsQuery.error) ? go("auth") : invitationsQuery.refetch())} />
         </Card>
       ) : (invitationsQuery.data?.data.length ?? 0) === 0 ? (
         <Card theme={theme}>
@@ -596,8 +615,28 @@ export function InvitationsScreen({ go, theme }: { go: (screen: string) => void;
           renderItem={({ item }) => (
             <Card theme={theme}>
               <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>{String(item.eventTitle)}</Text>
-              <Text style={[styles.muted, { color: theme.colors.slate }]}>From {String(item.sender)} - {String(item.status)}</Text>
+              <Text style={[styles.muted, { color: theme.colors.slate }]}>From {String(item.sender)} · {String(item.status)}</Text>
               {item.message ? <Text style={[styles.copy, { color: theme.colors.slate }]}>{String(item.message)}</Text> : null}
+              {String(item.status) === "PENDING" && (
+                <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
+                  <Pressable
+                    onPress={() => respondMutation.mutate({ invToken: String(item.token), status: "ACCEPTED" })}
+                    disabled={respondMutation.isPending}
+                    style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: 10, backgroundColor: theme.colors.gold }}
+                  >
+                    <Check size={14} color="#000000" />
+                    <Text style={{ fontWeight: "800", fontSize: 13, color: "#000000" }}>Accept</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => respondMutation.mutate({ invToken: String(item.token), status: "DECLINED" })}
+                    disabled={respondMutation.isPending}
+                    style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.line }}
+                  >
+                    <XIcon size={14} color={theme.colors.slate} />
+                    <Text style={{ fontWeight: "800", fontSize: 13, color: theme.colors.slate }}>Decline</Text>
+                  </Pressable>
+                </View>
+              )}
             </Card>
           )}
         />
@@ -614,6 +653,9 @@ export function SettingsScreen({ go, onRole, theme, notify }: { go: (screen: str
   const [socialHandle, setSocialHandle] = useState("");
   const [socialName, setSocialName] = useState("");
   const [followers, setFollowers] = useState("0");
+  const [currentPw, setCurrentPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
 
   const meQuery = useQuery({
     queryKey: ["me"],
@@ -633,7 +675,7 @@ export function SettingsScreen({ go, onRole, theme, notify }: { go: (screen: str
   const updateMutation = useMutation({
     mutationFn: async () => withMobileAuth((token) => api.updateMe(token, { fullName, phone, city, country })),
     onSuccess: async (result) => {
-      await AsyncStorage.setItem("velvet_user", JSON.stringify(result.data));
+      await SecureStore.setItemAsync("velvet_user", JSON.stringify(result.data));
       notify("Settings saved.", "Profile updated", "success");
     },
     onError: (error) => notify(error.message, "Settings", "error")
@@ -661,6 +703,18 @@ export function SettingsScreen({ go, onRole, theme, notify }: { go: (screen: str
       void vipQuery.refetch();
     },
     onError: (error) => notify(error.message, "VIP verification", "error")
+  });
+
+  const changePwMutation = useMutation({
+    mutationFn: async () => {
+      if (newPw !== confirmPw) throw new Error("New passwords do not match.");
+      return withMobileAuth((token) => api.changePassword(token, { currentPassword: currentPw, newPassword: newPw }));
+    },
+    onSuccess: () => {
+      setCurrentPw(""); setNewPw(""); setConfirmPw("");
+      notify("Password updated successfully.", "Security", "success");
+    },
+    onError: (error) => notify(error.message, "Change password", "error")
   });
 
   const logout = async () => {
@@ -706,6 +760,23 @@ export function SettingsScreen({ go, onRole, theme, notify }: { go: (screen: str
             <Text key={account.id} style={[styles.muted, { color: theme.colors.slate }]}>{account.provider} @{account.handle} - {account.vipStatus}</Text>
           ))}
         </Card>
+
+        <Card theme={theme} style={{ marginTop: 18 }}>
+          <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Change password</Text>
+          <TextInput style={inputStyle(theme)} placeholder="Current password" placeholderTextColor={theme.colors.slate} secureTextEntry value={currentPw} onChangeText={setCurrentPw} />
+          <TextInput style={inputStyle(theme)} placeholder="New password" placeholderTextColor={theme.colors.slate} secureTextEntry value={newPw} onChangeText={setNewPw} />
+          <TextInput style={inputStyle(theme)} placeholder="Confirm new password" placeholderTextColor={theme.colors.slate} secureTextEntry value={confirmPw} onChangeText={setConfirmPw} />
+          <View style={{ height: 14 }} />
+          <Button theme={theme} label={changePwMutation.isPending ? "Updating..." : "Update password"} disabled={!currentPw || !newPw || !confirmPw || changePwMutation.isPending} onPress={() => changePwMutation.mutate()} />
+        </Card>
+
+        <Pressable
+          onPress={() => go("orders")}
+          style={[styles.markAllBtn, { backgroundColor: theme.colors.card, borderColor: theme.colors.line, marginTop: 18, flexDirection: "row", gap: 10, justifyContent: "flex-start" }]}
+        >
+          <ShoppingBag size={18} color={theme.colors.gold} />
+          <Text style={{ color: theme.colors.ink, fontWeight: "700", fontSize: 15 }}>My orders</Text>
+        </Pressable>
       </ScrollView>
     </Screen>
   );
@@ -747,10 +818,32 @@ export function ScannerScreen({ go, theme, notify }: { go: (screen: string) => v
 }
 
 export function OrganizerQuickScreen({ go, theme }: { go?: (screen: string) => void; theme: AppTheme }) {
+  const queryClient = useQueryClient();
+  const [commEventId,  setCommEventId]  = useState("");
+  const [commAudience, setCommAudience] = useState<"STAFF" | "VENDORS" | "ALL">("ALL");
+  const [commSubject,  setCommSubject]  = useState("");
+  const [commBody,     setCommBody]     = useState("");
+
   const dashboardQuery = useQuery({ queryKey: ["organizer-dashboard"], queryFn: async () => withMobileAuth((token) => api.organizerDashboard(token)), retry: false });
   const transactionsQuery = useQuery({ queryKey: ["vendor-transactions"], queryFn: async () => withMobileAuth((token) => api.vendorTransactions(token)), retry: false });
   const messagesQuery = useQuery({ queryKey: ["communications"], queryFn: async () => withMobileAuth((token) => api.communications(token)), retry: false });
   const socialQuery = useQuery({ queryKey: ["hashtag-analytics"], queryFn: async () => withMobileAuth((token) => api.hashtagAnalytics(token)), retry: false });
+
+  const confirmTxMutation = useMutation({
+    mutationFn: async (id: string) => withMobileAuth((token) => api.confirmVendorTransaction(token, id)),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["vendor-transactions"] })
+  });
+
+  const sendCommMutation = useMutation({
+    mutationFn: async () => withMobileAuth((token) =>
+      api.createCommunication(token, { eventId: commEventId, audience: commAudience, subject: commSubject, body: commBody })
+    ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["communications"] });
+      setCommSubject(""); setCommBody("");
+    }
+  });
+
   const data = dashboardQuery.data?.data as Record<string, unknown> | undefined;
   const metrics = (data?.metrics ?? {}) as Record<string, unknown>;
   const events = (data?.events ?? []) as Record<string, unknown>[];
@@ -797,12 +890,51 @@ export function OrganizerQuickScreen({ go, theme }: { go?: (screen: string) => v
           {(messagesQuery.data?.data ?? []).slice(0, 4).map((message) => (
             <Text key={message.id} style={[styles.muted, { color: theme.colors.slate }]}>{message.audience}: {message.subject}</Text>
           ))}
+          <View style={{ marginTop: 16, borderTopWidth: 1, borderTopColor: theme.colors.line, paddingTop: 14 }}>
+            <Text style={[styles.muted, { color: theme.colors.slate, marginBottom: 4, fontWeight: "700" }]}>Send message</Text>
+            {events.length > 0 && (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                {events.slice(0, 5).map((ev) => (
+                  <Pressable key={String(ev.id)} onPress={() => setCommEventId(String(ev.id))} style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: commEventId === String(ev.id) ? theme.colors.gold : theme.colors.line, backgroundColor: commEventId === String(ev.id) ? theme.colors.gold + "20" : "transparent" }}>
+                    <Text style={{ color: commEventId === String(ev.id) ? theme.colors.gold : theme.colors.slate, fontSize: 12, fontWeight: "700" }}>{String(ev.title)}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
+              {(["ALL", "STAFF", "VENDORS"] as const).map((a) => (
+                <Pressable key={a} onPress={() => setCommAudience(a)} style={{ flex: 1, alignItems: "center", paddingVertical: 7, borderRadius: 8, borderWidth: 1, borderColor: commAudience === a ? theme.colors.gold : theme.colors.line, backgroundColor: commAudience === a ? theme.colors.gold + "20" : "transparent" }}>
+                  <Text style={{ color: commAudience === a ? theme.colors.gold : theme.colors.slate, fontSize: 12, fontWeight: "700" }}>{a}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <TextInput style={inputStyle(theme)} placeholder="Subject" placeholderTextColor={theme.colors.slate} value={commSubject} onChangeText={setCommSubject} />
+            <TextInput style={[inputStyle(theme), { minHeight: 80, paddingTop: 12 }]} placeholder="Message body" placeholderTextColor={theme.colors.slate} multiline value={commBody} onChangeText={setCommBody} />
+            <View style={{ height: 12 }} />
+            <Button theme={theme} label={sendCommMutation.isPending ? "Sending..." : "Send message"} disabled={!commEventId || !commSubject || !commBody || sendCommMutation.isPending} onPress={() => sendCommMutation.mutate()} />
+          </View>
         </Card>
         <Card theme={theme} style={{ marginTop: 18 }}>
           <WalletCards size={22} color={theme.colors.gold} />
           <Text style={[styles.cardTitle, { color: theme.colors.ink, marginTop: 10 }]}>Vendor transactions</Text>
-          {(transactionsQuery.data?.data ?? []).slice(0, 4).map((transaction) => (
-            <Text key={transaction.id} style={[styles.muted, { color: theme.colors.slate }]}>{transaction.vendor} - {transaction.currency} {transaction.amount} - {transaction.status}</Text>
+          {(transactionsQuery.data?.data ?? []).slice(0, 8).map((transaction) => (
+            <View key={transaction.id} style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 8, gap: 8 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.muted, { color: theme.colors.slate }]}>{transaction.vendor} — {transaction.currency} {transaction.amount}</Text>
+                <Text style={{ fontSize: 12, color: theme.colors.slate }}>{transaction.status}</Text>
+              </View>
+              {transaction.status === "PENDING" && (
+                <Pressable
+                  onPress={() => confirmTxMutation.mutate(String(transaction.id))}
+                  disabled={confirmTxMutation.isPending}
+                  style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: theme.colors.gold }}
+                >
+                  <Text style={{ color: "#000000", fontWeight: "800", fontSize: 12 }}>
+                    {confirmTxMutation.isPending ? "…" : "Confirm"}
+                  </Text>
+                </Pressable>
+              )}
+            </View>
           ))}
         </Card>
         <Card theme={theme} style={{ marginTop: 18 }}>
@@ -811,6 +943,170 @@ export function OrganizerQuickScreen({ go, theme }: { go?: (screen: string) => v
             <Text key={`${item.provider}-${item.hashtag}`} style={[styles.muted, { color: theme.colors.slate }]}>{String(item.provider)} {String(item.hashtag)} - {Number(item.reach ?? 0).toLocaleString()} reach</Text>
           ))}
         </Card>
+      </ScrollView>
+    </Screen>
+  );
+}
+
+function BellButton({ go, theme }: { go: (screen: string) => void; theme: AppTheme }) {
+  const countQuery = useQuery({
+    queryKey: ["notification-count"],
+    queryFn:  async () => withMobileAuth((token) => api.notificationUnreadCount(token)),
+    refetchInterval: 60_000,
+    retry: false
+  });
+  const unread = countQuery.data?.data.count ?? 0;
+  return (
+    <Pressable
+      onPress={() => go("notifications")}
+      style={[styles.themeToggle, { backgroundColor: theme.colors.card, borderColor: theme.colors.line }]}
+    >
+      <Bell size={16} color={theme.colors.gold} />
+      {unread > 0 && (
+        <View style={[styles.notifBadge, { backgroundColor: theme.colors.gold }]}>
+          <Text style={styles.notifBadgeText}>{unread > 9 ? "9+" : String(unread)}</Text>
+        </View>
+      )}
+    </Pressable>
+  );
+}
+
+export function NotificationsScreen({ go, theme, notify }: { go: (screen: string) => void; theme: AppTheme; notify: Notify }) {
+  const queryClient = useQueryClient();
+
+  const listQuery = useQuery({
+    queryKey: ["notifications"],
+    queryFn:  async () => withMobileAuth((token) => api.notifications(token)),
+    retry: false
+  });
+
+  const markAllMutation = useMutation({
+    mutationFn: async () => withMobileAuth((token) => api.markAllNotificationsRead(token)),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["notification-count"] });
+      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      notify("All notifications marked as read.", undefined, "success");
+    },
+    onError: (error) => notify(error.message, "Error", "error")
+  });
+
+  const notifications = listQuery.data?.data ?? [];
+  const unreadCount   = notifications.filter((n) => !n.readAt).length;
+
+  return (
+    <Screen theme={theme}>
+      <SubPageHeader title="Notifications" theme={theme} onBack={() => go("home")} />
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 120 }}
+        refreshControl={<RefreshControl refreshing={listQuery.isRefetching && !listQuery.isLoading} onRefresh={() => void listQuery.refetch()} tintColor={theme.colors.gold} colors={[theme.colors.gold]} progressBackgroundColor={theme.colors.card} />}
+      >
+        {unreadCount > 0 && (
+          <Pressable
+            onPress={() => markAllMutation.mutate()}
+            disabled={markAllMutation.isPending}
+            style={[styles.markAllBtn, { backgroundColor: theme.colors.card, borderColor: theme.colors.line }]}
+          >
+            <Text style={{ color: theme.colors.gold, fontWeight: "700", fontSize: 13 }}>
+              {markAllMutation.isPending ? "Marking…" : `Mark all ${unreadCount} as read`}
+            </Text>
+          </Pressable>
+        )}
+        {listQuery.isLoading && (
+          <Card theme={theme}>
+            <Text style={[styles.copy, { color: theme.colors.slate }]}>Loading notifications…</Text>
+          </Card>
+        )}
+        {!listQuery.isLoading && notifications.length === 0 && (
+          <Card theme={theme}>
+            <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>No notifications</Text>
+            <Text style={[styles.copy, { color: theme.colors.slate }]}>You're all caught up.</Text>
+          </Card>
+        )}
+        {notifications.map((n) => (
+          <Card key={n.id} theme={theme} style={{ marginBottom: 10 }}>
+            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
+              {!n.readAt && (
+                <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.gold, marginTop: 5 }} />
+              )}
+              <View style={{ flex: 1, paddingLeft: n.readAt ? 18 : 0 }}>
+                <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>{n.title}</Text>
+                <Text style={[styles.copy, { color: theme.colors.slate }]}>{n.body}</Text>
+                <Text style={[styles.muted, { color: theme.colors.slate }]}>
+                  {new Date(n.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                </Text>
+              </View>
+            </View>
+          </Card>
+        ))}
+      </ScrollView>
+    </Screen>
+  );
+}
+
+export function OrdersScreen({ go, theme }: { go: (screen: string) => void; theme: AppTheme }) {
+  const ordersQuery = useQuery({
+    queryKey: ["orders"],
+    queryFn: async () => withMobileAuth((token) => api.orders(token)),
+    retry: false
+  });
+
+  const orders = (ordersQuery.data?.data ?? []) as Record<string, unknown>[];
+
+  return (
+    <Screen theme={theme}>
+      <SubPageHeader title="My orders" theme={theme} onBack={() => go("settings")} />
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 120 }}
+        refreshControl={<RefreshControl refreshing={ordersQuery.isRefetching && !ordersQuery.isLoading} onRefresh={() => void ordersQuery.refetch()} tintColor={theme.colors.gold} colors={[theme.colors.gold]} progressBackgroundColor={theme.colors.card} />}
+      >
+        {ordersQuery.isLoading && <TicketSkeleton theme={theme} />}
+        {ordersQuery.isError && (
+          <Card theme={theme}>
+            <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Could not load orders</Text>
+            <Text style={[styles.copy, { color: theme.colors.slate }]}>{ordersQuery.error.message}</Text>
+            <View style={{ height: 12 }} />
+            <Button theme={theme} label="Try again" onPress={() => void ordersQuery.refetch()} />
+          </Card>
+        )}
+        {!ordersQuery.isLoading && orders.length === 0 && (
+          <Card theme={theme}>
+            <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>No orders yet</Text>
+            <Text style={[styles.copy, { color: theme.colors.slate }]}>Tickets you purchase will appear here.</Text>
+          </Card>
+        )}
+        {orders.map((order) => {
+          const event   = order.event as Record<string, unknown> | undefined;
+          const tickets = (order.tickets as Record<string, unknown>[] | undefined) ?? [];
+          const total   = Number(order.totalAmount ?? 0);
+          const currency = String(order.currency ?? "GHS");
+          const status  = String(order.status ?? "");
+          return (
+            <Card key={String(order.id)} theme={theme} style={{ marginBottom: 12 }}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>{event ? String(event.title) : "Event"}</Text>
+                  <Text style={[styles.muted, { color: theme.colors.slate }]}>
+                    {tickets.length} ticket{tickets.length !== 1 ? "s" : ""} · {currency} {total.toFixed(2)}
+                  </Text>
+                </View>
+                <Text style={{ fontSize: 12, fontWeight: "800", color: status === "CONFIRMED" ? "#22c55e" : theme.colors.slate, paddingTop: 2 }}>{status}</Text>
+              </View>
+              {tickets.length > 0 && (
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+                  {tickets.map((t) => (
+                    <View key={String(t.id)} style={{ borderWidth: 1, borderColor: theme.colors.line, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 }}>
+                      <Text style={{ fontSize: 12, color: theme.colors.slate }}>
+                        {String(t.ticketType ?? t.type ?? "Ticket")} #{String(t.id).slice(-6).toUpperCase()}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </Card>
+          );
+        })}
       </ScrollView>
     </Screen>
   );
@@ -948,5 +1244,8 @@ const styles = StyleSheet.create({
   scanner: { flex: 1, borderRadius: 24, borderWidth: 1, alignItems: "center", justifyContent: "center", marginBottom: 18 },
   stats: { flexDirection: "row", gap: 12, marginBottom: 14 },
   nav: { position: "absolute", left: 14, right: 14, bottom: 14, minHeight: 72, borderRadius: 20, borderWidth: 1, flexDirection: "row", alignItems: "center", justifyContent: "space-around", paddingHorizontal: 6, zIndex: 50, elevation: 16 },
-  navItem: { minWidth: 56, height: 56, alignItems: "center", justifyContent: "center" }
+  navItem: { minWidth: 56, height: 56, alignItems: "center", justifyContent: "center" },
+  markAllBtn: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 12, alignItems: "center" },
+  notifBadge: { position: "absolute", top: -4, right: -4, minWidth: 16, height: 16, borderRadius: 8, alignItems: "center", justifyContent: "center", paddingHorizontal: 3 },
+  notifBadgeText: { fontSize: 9, fontWeight: "900", color: "#000000" }
 });

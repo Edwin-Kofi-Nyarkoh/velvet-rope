@@ -7,7 +7,9 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true
     },
@@ -18,6 +20,9 @@
     },
     "extra": {
       "apiBaseUrl": "http://192.168.1.162:4000/api"
-    }
+    },
+    "plugins": [
+      "expo-secure-store"
+    ]
   }
 }

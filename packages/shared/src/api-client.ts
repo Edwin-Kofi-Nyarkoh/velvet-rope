@@ -21,8 +21,8 @@ export class VelvetApiClient {
       const timedOut = error instanceof Error && error.name === "AbortError";
       throw new Error(
         timedOut
-          ? `Request timed out connecting to ${this.baseUrl}. Make sure the API server is running.`
-          : `Network request failed for ${this.baseUrl}. Make sure the API is running and your phone is on the same Wi-Fi as your computer.`
+          ? "Request timed out. Please check your connection and try again."
+          : "Connection failed. Please check your internet connection and try again."
       );
     } finally {
       clearTimeout(timeout);
@@ -33,7 +33,7 @@ export class VelvetApiClient {
       const message = payload?.error?.message ?? "Request failed";
       const code = payload?.error?.code as string | undefined;
       const redirectTo = (payload?.error?.details as { redirectTo?: string } | undefined)?.redirectTo;
-      throw Object.assign(new Error(message), { code, redirectTo });
+      throw Object.assign(new Error(message), { code, redirectTo, status: response.status });
     }
 
     return payload as T;
@@ -281,6 +281,10 @@ export class VelvetApiClient {
     return this.request<ApiResult<Array<Record<string, unknown>>>>(`/tickets/types${query}`, { token });
   }
 
+  logout(token: string) {
+    return this.request<ApiResult<{ message: string }>>("/auth/logout", { method: "POST", token });
+  }
+
   forgotPassword(email: string) {
     return this.request<ApiResult<{ message: string }>>("/auth/forgot-password", {
       method: "POST",
@@ -293,5 +297,115 @@ export class VelvetApiClient {
       method: "POST",
       body: JSON.stringify({ token, password })
     });
+  }
+
+  changePassword(token: string, input: { currentPassword: string; newPassword: string }) {
+    return this.request<ApiResult<{ message: string }>>("/users/me/password", {
+      method: "PATCH",
+      token,
+      body: JSON.stringify(input)
+    });
+  }
+
+  updateEvent(token: string, id: string, input: Record<string, unknown>) {
+    return this.request<ApiResult<Record<string, unknown>>>(`/events/${id}`, {
+      method: "PATCH",
+      token,
+      body: JSON.stringify(input)
+    });
+  }
+
+  deleteEvent(token: string, id: string) {
+    return this.request<ApiResult<{ message: string }>>(`/events/${id}`, {
+      method: "DELETE",
+      token
+    });
+  }
+
+  addStaff(token: string, input: { userId?: string; email?: string; eventId: string; canScanTickets?: boolean; canManageGuests?: boolean; canViewRevenue?: boolean; canManageVendors?: boolean }) {
+    return this.request<ApiResult<Record<string, unknown>>>("/staff", {
+      method: "POST",
+      token,
+      body: JSON.stringify(input)
+    });
+  }
+
+  updateStaff(token: string, id: string, input: { canScanTickets?: boolean; canManageGuests?: boolean; canViewRevenue?: boolean; canManageVendors?: boolean }) {
+    return this.request<ApiResult<Record<string, unknown>>>(`/staff/${id}`, {
+      method: "PATCH",
+      token,
+      body: JSON.stringify(input)
+    });
+  }
+
+  removeStaff(token: string, id: string) {
+    return this.request<ApiResult<{ message: string }>>(`/staff/${id}`, {
+      method: "DELETE",
+      token
+    });
+  }
+
+  addVendor(token: string, input: { userId?: string; email?: string; eventId?: string; businessName: string; category: string; description?: string; phone?: string }) {
+    return this.request<ApiResult<Record<string, unknown>>>("/vendors", {
+      method: "POST",
+      token,
+      body: JSON.stringify(input)
+    });
+  }
+
+  updateVendor(token: string, id: string, input: { businessName?: string; category?: string; description?: string; phone?: string; email?: string; eventId?: string }) {
+    return this.request<ApiResult<Record<string, unknown>>>(`/vendors/${id}`, {
+      method: "PATCH",
+      token,
+      body: JSON.stringify(input)
+    });
+  }
+
+  removeVendor(token: string, id: string) {
+    return this.request<ApiResult<{ message: string }>>(`/vendors/${id}`, {
+      method: "DELETE",
+      token
+    });
+  }
+
+  notifications(token: string) {
+    return this.request<ApiResult<Array<{ id: string; title: string; body: string; readAt: string | null; createdAt: string }>>>("/notifications", { token });
+  }
+
+  notificationUnreadCount(token: string) {
+    return this.request<ApiResult<{ count: number }>>("/notifications/unread-count", { token });
+  }
+
+  markNotificationRead(token: string, id: string) {
+    return this.request<ApiResult<Record<string, unknown>>>(`/notifications/${id}/read`, {
+      method: "PATCH",
+      token
+    });
+  }
+
+  markAllNotificationsRead(token: string) {
+    return this.request<ApiResult<{ message: string }>>("/notifications/read-all", {
+      method: "PATCH",
+      token
+    });
+  }
+
+  respondToInvitation(invitationToken: string, status: "ACCEPTED" | "DECLINED") {
+    return this.request<ApiResult<Record<string, unknown>>>(`/invitations/${encodeURIComponent(invitationToken)}/respond`, {
+      method: "POST",
+      body: JSON.stringify({ status })
+    });
+  }
+
+  updateEventPopularity(token: string, id: string, input: { isPopular: boolean; isFeatured?: boolean }) {
+    return this.request<ApiResult<Record<string, unknown>>>(`/events/${id}/popularity`, {
+      method: "PATCH",
+      token,
+      body: JSON.stringify(input)
+    });
+  }
+
+  orders(token: string) {
+    return this.request<ApiResult<Array<Record<string, unknown>>>>("/orders", { token });
   }
 }

@@ -7,6 +7,9 @@ import { getWebAccessToken } from "@/lib/auth-token";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
+const inputCls2 =
+  "h-11 w-full rounded-lg border border-vr-border bg-vr-surface px-3 text-sm text-vr-text placeholder:text-vr-muted outline-none transition-colors focus:border-vr-gold focus:ring-1 focus:ring-vr-gold";
+
 const inputCls =
   "h-11 w-full rounded-lg border border-vr-border bg-vr-surface px-3 text-sm text-vr-text placeholder:text-vr-muted outline-none transition-colors focus:border-vr-gold focus:ring-1 focus:ring-vr-gold";
 
@@ -101,6 +104,61 @@ export function SettingsClient() {
 
       <Button className="mt-5" disabled={updateMutation.isPending}>
         {updateMutation.isPending ? "Saving…" : "Save settings"}
+      </Button>
+    </form>
+  );
+}
+
+/** Change-password form shown below profile settings. */
+export function ChangePasswordClient() {
+  const [current,  setCurrent]  = useState("");
+  const [next,     setNext]     = useState("");
+  const [confirm,  setConfirm]  = useState("");
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      if (next !== confirm) throw new Error("New passwords do not match.");
+      return api.changePassword(await getWebAccessToken(), { currentPassword: current, newPassword: next });
+    },
+    onSuccess: () => { setCurrent(""); setNext(""); setConfirm(""); }
+  });
+
+  return (
+    <form
+      className="mt-6 max-w-2xl rounded-xl border border-vr-border bg-vr-card p-6"
+      onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }}
+    >
+      <h2 className="text-lg font-semibold text-vr-text">Change password</h2>
+      <p className="mt-1.5 text-sm text-vr-muted">Choose a strong password of at least 8 characters.</p>
+
+      <div className="mt-5 grid gap-4">
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-vr-text">Current password</label>
+          <input className={inputCls2} type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} required />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-vr-text">New password</label>
+          <input className={inputCls2} type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} minLength={8} required />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-vr-text">Confirm new password</label>
+          <input className={inputCls2} type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} minLength={8} required />
+        </div>
+      </div>
+
+      {mutation.isError && (
+        <div className="mt-4 rounded-lg border border-vr-danger/30 bg-vr-danger/10 px-3 py-2.5 text-sm text-vr-danger">
+          {mutation.error.message}
+        </div>
+      )}
+      {mutation.isSuccess && (
+        <div className="mt-4 rounded-lg border border-vr-success/30 bg-vr-success/10 px-3 py-2.5 text-sm text-vr-success">
+          Password updated successfully.
+        </div>
+      )}
+
+      <Button className="mt-5" disabled={mutation.isPending}>
+        {mutation.isPending ? "Updating…" : "Update password"}
       </Button>
     </form>
   );

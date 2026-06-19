@@ -3,9 +3,10 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BarChart3,
+  Bell,
   CalendarDays,
   ChevronRight,
   Home,
@@ -15,6 +16,7 @@ import {
   Moon,
   QrCode,
   Settings,
+  ShoppingBag,
   Sun,
   Ticket,
   Users,
@@ -22,8 +24,10 @@ import {
   MapPin,
   MessageSquare
 } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "./ui/button";
 import { clearWebAuth, readWebAuthUser, type WebAuthUser } from "@/lib/auth-token";
+import { api } from "@/lib/api";
 
 // ─── Theme toggle ─────────────────────────────────────────────────────────────
 
@@ -79,14 +83,127 @@ function useStoredUser() {
   return user;
 }
 
+// ─── Notification Bell ─────────────────────────────────────────────────────────
+
+function NotificationBell() {
+  const [token, setToken] = useState<string | null>(null);
+  const [open, setOpen]   = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    const sync = () => setToken(localStorage.getItem("velvet_access_token"));
+    sync();
+    window.addEventListener("storage", sync);
+    window.addEventListener("velvet-auth", sync);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener("velvet-auth", sync);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const countQuery = useQuery({
+    queryKey: ["notification-count"],
+    queryFn:  () => api.notificationUnreadCount(token!),
+    enabled:  Boolean(token),
+    refetchInterval: 60_000
+  });
+
+  const listQuery = useQuery({
+    queryKey: ["notifications"],
+    queryFn:  () => api.notifications(token!),
+    enabled:  open && Boolean(token)
+  });
+
+  const markAllMutation = useMutation({
+    mutationFn: () => api.markAllNotificationsRead(token!),
+    onSuccess:  () => {
+      void queryClient.invalidateQueries({ queryKey: ["notification-count"] });
+      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    }
+  });
+
+  if (!token) return null;
+
+  const unread = countQuery.data?.data.count ?? 0;
+  const items  = listQuery.data?.data ?? [];
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        aria-label={`Notifications${unread > 0 ? ` (${unread} unread)` : ""}`}
+        onClick={() => setOpen((v) => !v)}
+        className="relative flex size-9 items-center justify-center rounded-lg border border-vr-border text-vr-muted transition hover:border-vr-gold/40 hover:text-vr-text"
+      >
+        <Bell className="size-4" />
+        {unread > 0 && (
+          <span className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-vr-gold text-[9px] font-bold text-vr-black">
+            {unread > 9 ? "9+" : unread}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-11 z-50 w-80 rounded-xl border border-vr-border bg-vr-surface shadow-soft">
+          <div className="flex items-center justify-between border-b border-vr-border px-4 py-3">
+            <span className="text-sm font-semibold text-vr-text">Notifications</span>
+            {unread > 0 && (
+              <button
+                onClick={() => markAllMutation.mutate()}
+                disabled={markAllMutation.isPending}
+                className="text-xs text-vr-gold hover:underline disabled:opacity-50"
+              >
+                Mark all read
+              </button>
+            )}
+          </div>
+          <div className="max-h-72 overflow-y-auto">
+            {listQuery.isLoading && (
+              <p className="p-4 text-center text-sm text-vr-muted">Loading…</p>
+            )}
+            {!listQuery.isLoading && items.length === 0 && (
+              <p className="p-6 text-center text-sm text-vr-muted">No notifications yet.</p>
+            )}
+            {items.map((n) => (
+              <div
+                key={n.id}
+                className={`border-b border-vr-border px-4 py-3 last:border-0 ${!n.readAt ? "bg-vr-gold/5" : ""}`}
+              >
+                <div className="flex items-start gap-2.5">
+                  {!n.readAt && <span className="mt-2 size-1.5 shrink-0 rounded-full bg-vr-gold" />}
+                  <div className={!n.readAt ? "" : "pl-4"}>
+                    <p className="text-sm font-medium text-vr-text">{n.title}</p>
+                    <p className="mt-0.5 text-xs text-vr-muted">{n.body}</p>
+                    <p className="mt-1 text-[10px] text-vr-muted/60">{new Date(n.createdAt).toLocaleDateString()}</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Navigation definitions ───────────────────────────────────────────────────
 
 const attendeeNav = [
-  { href: "/",                     label: "Home",        icon: Home         },
+  { href: "/",                     label: "Home",        icon: Home          },
   { href: "/dashboard",            label: "Dashboard",   icon: LayoutDashboard },
-  { href: "/dashboard/tickets",    label: "My Tickets",  icon: Ticket       },
+  { href: "/dashboard/tickets",    label: "My Tickets",  icon: Ticket        },
+  { href: "/dashboard/orders",     label: "Orders",      icon: ShoppingBag   },
   { href: "/dashboard/invitations",label: "Invitations", icon: MessageSquare },
-  { href: "/dashboard/settings",   label: "Settings",    icon: Settings     }
+  { href: "/dashboard/settings",   label: "Settings",    icon: Settings      }
 ];
 
 const organizerNav = [
@@ -169,6 +286,7 @@ export function PublicNav() {
           <div className="hidden items-center gap-2 md:flex">
             {user ? (
               <>
+                <NotificationBell />
                 <span className="max-w-40 truncate text-sm text-vr-muted">{user.email}</span>
                 <Button variant="ghost" size="sm" onClick={logout}>
                   <LogOut className="size-4" />

@@ -101,8 +101,8 @@ export const platformService = {
     const eventIds = events.map((event) => event.id);
     const [paidOrders, vendorTransactions, messages] = await Promise.all([
       prisma.order.findMany({ where: { eventId: { in: eventIds }, status: "PAID" } }),
-      prisma.vendorTransaction.findMany({ where: { eventId: { in: eventIds } }, include: { vendor: true, attendee: { include: { profile: true } } }, orderBy: { createdAt: "desc" }, take: 8 }),
-      prisma.eventMessage.findMany({ where: { eventId: { in: eventIds } }, include: { event: true, sender: { include: { profile: true } } }, orderBy: { createdAt: "desc" }, take: 8 })
+      prisma.vendorTransaction.findMany({ where: { eventId: { in: eventIds } }, include: { vendor: true, attendee: { select: { email: true, profile: { select: { fullName: true } } } } }, orderBy: { createdAt: "desc" }, take: 8 }),
+      prisma.eventMessage.findMany({ where: { eventId: { in: eventIds } }, include: { event: true, sender: { select: { email: true, profile: { select: { fullName: true } } } } }, orderBy: { createdAt: "desc" }, take: 8 })
     ]);
 
     const revenue = paidOrders.reduce((sum, order) => sum + serializeDecimal(order.amount), 0);
@@ -181,7 +181,9 @@ export const platformService = {
   async upsertSocialAccount(userId: string, input: unknown) {
     const data = socialAccountSchema.parse(input);
     const normalizedHandle = data.handle.replace(/^@/, "").toLowerCase();
-    const vipStatus = data.provider === "X" && data.followerCount >= 10000 ? VipVerificationStatus.VERIFIED : VipVerificationStatus.UNVERIFIED;
+    // Self-reported follower counts are never sufficient for auto-verification.
+    // VIP status is set only through the manual submitVipVerification review flow.
+    const vipStatus = VipVerificationStatus.UNVERIFIED;
     return prisma.socialAccount.upsert({
       where: { provider_handle: { provider: data.provider, handle: normalizedHandle } },
       update: {
@@ -189,7 +191,7 @@ export const platformService = {
         displayName: data.displayName,
         followerCount: data.followerCount,
         vipStatus,
-        verifiedAt: vipStatus === VipVerificationStatus.VERIFIED ? new Date() : undefined
+        verifiedAt: undefined
       },
       create: {
         userId,
@@ -198,7 +200,7 @@ export const platformService = {
         displayName: data.displayName,
         followerCount: data.followerCount,
         vipStatus,
-        verifiedAt: vipStatus === VipVerificationStatus.VERIFIED ? new Date() : undefined
+        verifiedAt: undefined
       }
     });
   },
@@ -215,23 +217,16 @@ export const platformService = {
     const data = vipVerificationSchema.parse(input);
     const handle = data.handle.replace(/^@/, "").toLowerCase();
     const account = await prisma.socialAccount.findUnique({ where: { provider_handle: { provider: data.provider, handle } } });
-    const autoVerified = data.provider === "X" && (account?.followerCount ?? 0) >= 10000;
-    const verification = await prisma.vipVerification.create({
+    return prisma.vipVerification.create({
       data: {
         userId,
         socialAccountId: account?.id,
         provider: data.provider,
         handle,
         evidenceUrl: data.evidenceUrl,
-        status: autoVerified ? VipVerificationStatus.VERIFIED : VipVerificationStatus.PENDING,
-        reviewedAt: autoVerified ? new Date() : undefined,
-        reviewerNote: autoVerified ? "Auto-verified from linked X follower threshold." : undefined
+        status: VipVerificationStatus.PENDING
       }
     });
-    if (account && autoVerified) {
-      await prisma.socialAccount.update({ where: { id: account.id }, data: { vipStatus: VipVerificationStatus.VERIFIED, verifiedAt: new Date() } });
-    }
-    return verification;
   },
 
   async hashtagAnalytics(user: AuthUser, eventId?: string) {
@@ -269,7 +264,7 @@ export const platformService = {
   },
 
   async calendarEvent(eventId: string) {
-    const event = await prisma.event.findUnique({ where: { id: eventId }, include: { organizer: { include: { profile: true } } } });
+    const event = await prisma.event.findUnique({ where: { id: eventId }, include: { organizer: { select: { profile: { select: { fullName: true } } } } } });
     if (!event) throw new AppError(404, "EVENT_NOT_FOUND", "Event not found.");
     const uid = `${event.id}@velvetrope.app`;
     const ics = [
@@ -282,11 +277,11 @@ export const platformService = {
       `UID:${uid}`,
       `DTSTAMP:${formatIcsDate(new Date())}`,
       `DTSTART:${formatIcsDate(event.startsAt)}`,
-      `DTEND:${formatIcsDate(event.endsAt)}`,
+      `DTEND:${formatIcsDate(event.endsAt ?? new Date(event.startsAt.getTime() + 2 * 60 * 60 * 1000))}`,
       `SUMMARY:${escapeIcs(event.title)}`,
       `DESCRIPTION:${escapeIcs(event.description)}`,
       `LOCATION:${escapeIcs(`${event.venueName}, ${event.address}, ${event.city}`)}`,
-      `ORGANIZER;CN=${escapeIcs(event.organizer.profile?.fullName ?? event.organizer.email)}:MAILTO:${event.organizer.email}`,
+      `ORGANIZER;CN=${escapeIcs(event.organizer.profile?.fullName ?? "Organizer")}:MAILTO:noreply@velvetrope.app`,
       "END:VEVENT",
       "END:VCALENDAR"
     ].join("\r\n");
@@ -317,8 +312,8 @@ export const platformService = {
     const events = await prisma.event.findMany({
       where: eventWhere,
       include: {
-        tables: { include: { seats: { include: { ticket: { include: { user: { include: { profile: true } }, ticketType: true } } } } } },
-        seats: { include: { table: true, ticket: { include: { user: { include: { profile: true } }, ticketType: true } } } }
+        tables: { include: { seats: { include: { ticket: { include: { user: { select: { email: true, profile: { select: { fullName: true } } } }, ticketType: true } } } } } },
+        seats: { include: { table: true, ticket: { include: { user: { select: { email: true, profile: { select: { fullName: true } } } }, ticketType: true } } } }
       },
       orderBy: { startsAt: "asc" }
     });
@@ -353,7 +348,20 @@ export const platformService = {
     await assertEventManager(user, seat.eventId);
     const ticket = await prisma.ticket.findUnique({ where: { id: data.ticketId } });
     if (!ticket || ticket.eventId !== seat.eventId) throw new AppError(404, "TICKET_NOT_FOUND", "Ticket not found for this event.");
-    return prisma.seat.update({ where: { id: seat.id }, data: { ticketId: ticket.id, status: "ASSIGNED" }, include: { ticket: { include: { user: { include: { profile: true } } } }, table: true } });
+    const updated = await prisma.seat.update({
+      where: { id: seat.id },
+      data: { ticketId: ticket.id, status: "ASSIGNED" },
+      include: { ticket: { include: { user: { select: { email: true, profile: { select: { fullName: true } } } } } }, table: true }
+    });
+    return {
+      id: updated.id,
+      label: updated.label,
+      status: updated.status,
+      table: updated.table?.name ?? null,
+      zone: updated.table?.zone ?? null,
+      ticketId: updated.ticketId,
+      attendee: updated.ticket?.user.profile?.fullName ?? updated.ticket?.user.email ?? null
+    };
   },
 
   async vendorTransactions(user: AuthUser) {
@@ -367,7 +375,7 @@ export const platformService = {
           : { attendeeId: user.id };
     const transactions = await prisma.vendorTransaction.findMany({
       where,
-      include: { event: true, vendor: { include: { user: { include: { profile: true } } } }, attendee: { include: { profile: true } } },
+      include: { event: true, vendor: { include: { user: { select: { email: true, profile: { select: { fullName: true } } } } } }, attendee: { select: { email: true, profile: { select: { fullName: true } } } } },
       orderBy: { createdAt: "desc" },
       take: 50
     });
@@ -409,8 +417,9 @@ export const platformService = {
   async confirmVendorTransaction(user: AuthUser, transactionId: string) {
     const transaction = await prisma.vendorTransaction.findUnique({ where: { id: transactionId }, include: { vendor: true, event: true } });
     if (!transaction) throw new AppError(404, "TRANSACTION_NOT_FOUND", "Vendor transaction not found.");
-    const canConfirm = adminRoles.has(user.role) || transaction.vendor.userId === user.id || transaction.event.organizerId === user.id;
+    const canConfirm = adminRoles.has(user.role) || transaction.event.organizerId === user.id;
     if (!canConfirm) throw new AppError(403, "TRANSACTION_NOT_ALLOWED", "You cannot confirm this vendor transaction.");
+    if (transaction.status !== VendorTransactionStatus.PENDING) throw new AppError(409, "TRANSACTION_NOT_PENDING", "Only pending transactions can be confirmed.");
     return prisma.vendorTransaction.update({ where: { id: transaction.id }, data: { status: VendorTransactionStatus.PAID, paidAt: new Date() } });
   },
 

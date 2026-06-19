@@ -1,10 +1,10 @@
 "use client";
 
 import { useMutation } from "@tanstack/react-query";
-import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { api } from "@/lib/api";
+import { storeWebAuth } from "@/lib/auth-token";
 import { Button } from "@/components/ui/button";
 
 const inputCls =
@@ -20,18 +20,7 @@ export function OtpForm() {
   const mutation = useMutation({
     mutationFn: () => api.verifyEmail({ email, code }),
     onSuccess: async (result) => {
-      localStorage.setItem("velvet_access_token",  result.data.accessToken);
-      localStorage.setItem("velvet_refresh_token", result.data.refreshToken);
-      localStorage.setItem("velvet_user",          JSON.stringify(result.data.user));
-      window.dispatchEvent(new Event("velvet-auth"));
-
-      const pendingEmail    = sessionStorage.getItem("velvet_pending_email");
-      const pendingPassword = sessionStorage.getItem("velvet_pending_password");
-      if (pendingEmail === email && pendingPassword) {
-        await signIn("credentials", { email, password: pendingPassword, redirect: false });
-        sessionStorage.removeItem("velvet_pending_email");
-        sessionStorage.removeItem("velvet_pending_password");
-      }
+      storeWebAuth({ accessToken: result.data.accessToken, refreshToken: result.data.refreshToken, user: result.data.user });
 
       const redirectTo = (result.data as typeof result.data & { redirectTo?: string }).redirectTo;
       router.push(redirectTo ?? "/dashboard");
@@ -48,7 +37,7 @@ export function OtpForm() {
     >
       <h1 className="text-2xl font-bold text-vr-text">Verify your email</h1>
       <p className="mt-2 text-sm text-vr-muted">
-        Enter the 6-digit code sent to your email. It expires in 10 minutes.
+        Enter the 6-digit code sent to your email. It expires in 30 minutes.
       </p>
 
       <label className="mt-6 block text-sm font-medium text-vr-text">Email</label>

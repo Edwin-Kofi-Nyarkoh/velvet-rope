@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import argon2 from "argon2";
 import jwt from "jsonwebtoken";
 import type { Role, User } from "@prisma/client";
-import { registerSchema, loginSchema } from "@velvet-rope/shared";
+import { registerSchema, loginSchema, passwordSchema } from "@velvet-rope/shared";
 import { env } from "../env";
 import { AppError } from "../lib/http";
 import { prisma } from "../lib/prisma";
@@ -17,8 +17,8 @@ function passwordInput(password: string) {
   return `${password}${env.PASSWORD_PEPPER}`;
 }
 
-function signTokens(user: Pick<User, "id" | "email" | "role">) {
-  const payload = { id: user.id, email: user.email, role: user.role };
+function signTokens(user: Pick<User, "id" | "email" | "role" | "tokenVersion">) {
+  const payload = { id: user.id, email: user.email, role: user.role, tv: user.tokenVersion };
   return {
     accessToken: jwt.sign(payload, env.JWT_ACCESS_SECRET, { expiresIn: "15m" }),
     refreshToken: jwt.sign(payload, env.JWT_REFRESH_SECRET, { expiresIn: "30d" })
@@ -37,6 +37,9 @@ export const authService = {
     const data = registerSchema.parse(input);
     if (data.role === "SUPER_ADMIN" || data.role === "ADMIN") {
       throw new AppError(403, "ROLE_NOT_ALLOWED", "Admin accounts must be provisioned by an existing admin.");
+    }
+    if (data.role === "STAFF" || data.role === "VENDOR") {
+      throw new AppError(403, "ROLE_NOT_ALLOWED", "Staff and vendor accounts are created by event organizers, not through self-registration.");
     }
 
     const existing = await prisma.user.findUnique({
@@ -85,7 +88,7 @@ export const authService = {
       include: { profile: true }
     });
 
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = crypto.randomInt(100000, 1000000).toString();
     const codeHash = await argon2.hash(code, {
       type: argon2.argon2id,
       memoryCost: 12288,
@@ -102,11 +105,11 @@ export const authService = {
       }
     });
 
-    await emailService.sendVerificationCode({
+    emailService.sendVerificationCode({
       email: user.email,
       fullName: user.profile?.fullName ?? data.fullName,
       code
-    });
+    }).catch((err: unknown) => console.error("[register] email failed:", err));
 
     return {
       verificationRequired: true,
@@ -173,17 +176,21 @@ export const authService = {
 
   async refresh(refreshToken: string) {
     try {
-      const payload = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET) as Pick<User, "id" | "email" | "role">;
+      const payload = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET) as Pick<User, "id" | "email" | "role"> & { tv?: number };
       const user = await prisma.user.findUnique({ where: { id: payload.id }, include: { profile: true } });
       if (!user) throw new AppError(401, "INVALID_REFRESH_TOKEN", "Your refresh token is invalid.");
       if (!user.emailVerifiedAt) throw new AppError(403, "EMAIL_NOT_VERIFIED", "Please verify your email before continuing.");
+      if (typeof payload.tv === "number" && payload.tv !== user.tokenVersion) {
+        throw new AppError(401, "TOKEN_REVOKED", "Your session has been invalidated. Please log in again.");
+      }
       const tokens = signTokens(user);
       return {
         ...tokens,
         redirectTo: dashboardFor(user.role),
         user: { id: user.id, email: user.email, role: user.role, fullName: user.profile?.fullName ?? "Guest" }
       };
-    } catch {
+    } catch (err) {
+      if (err instanceof AppError) throw err;
       throw new AppError(401, "INVALID_REFRESH_TOKEN", "Your refresh token is invalid or expired.");
     }
   },
@@ -217,6 +224,10 @@ export const authService = {
     if (!token || !newPassword) {
       throw new AppError(422, "RESET_INVALID", "Token and new password are required.");
     }
+    const parsed = passwordSchema.safeParse(newPassword);
+    if (!parsed.success) {
+      throw new AppError(422, "WEAK_PASSWORD", "Password must be at least 10 characters.");
+    }
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
     const reset = await prisma.passwordReset.findUnique({ where: { tokenHash } });
 
@@ -232,11 +243,35 @@ export const authService = {
     });
 
     await prisma.$transaction([
-      prisma.user.update({ where: { id: reset.userId }, data: { passwordHash, failedLoginCount: 0, lockedUntil: null } }),
+      prisma.user.update({ where: { id: reset.userId }, data: { passwordHash, failedLoginCount: 0, lockedUntil: null, tokenVersion: { increment: 1 } } }),
       prisma.passwordReset.update({ where: { id: reset.id }, data: { usedAt: new Date() } })
     ]);
 
     return { message: "Password updated. You can now log in with your new password." };
+  },
+
+  async changePassword(userId: string, currentPassword: string, newPassword: string) {
+    if (!currentPassword || !newPassword) {
+      throw new AppError(422, "MISSING_FIELDS", "currentPassword and newPassword are required.");
+    }
+    const parsed = passwordSchema.safeParse(newPassword);
+    if (!parsed.success) {
+      throw new AppError(422, "WEAK_PASSWORD", "New password must be at least 10 characters.");
+    }
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new AppError(404, "USER_NOT_FOUND", "User not found.");
+
+    const valid = await argon2.verify(user.passwordHash, passwordInput(currentPassword));
+    if (!valid) throw new AppError(401, "INVALID_PASSWORD", "Current password is incorrect.");
+
+    const passwordHash = await argon2.hash(passwordInput(newPassword), {
+      type: argon2.argon2id,
+      memoryCost: 19456,
+      timeCost: 2,
+      parallelism: 1
+    });
+    await prisma.user.update({ where: { id: user.id }, data: { passwordHash, failedLoginCount: 0, lockedUntil: null, tokenVersion: { increment: 1 } } });
+    return { message: "Password updated successfully." };
   },
 
   async verifyEmail(input: { email?: string; code?: string }) {
@@ -268,8 +303,18 @@ export const authService = {
       throw new AppError(410, "VERIFICATION_EXPIRED", "This code has expired. Please sign up again.");
     }
 
+    const MAX_OTP_ATTEMPTS = 5;
+    if (verification.attempts >= MAX_OTP_ATTEMPTS) {
+      await prisma.user.delete({ where: { id: user.id } }).catch(() => undefined);
+      throw new AppError(429, "TOO_MANY_OTP_ATTEMPTS", "Too many failed attempts. Please sign up again.");
+    }
+
     const valid = await argon2.verify(verification.codeHash, input.code);
-    if (!valid) throw new AppError(401, "INVALID_VERIFICATION_CODE", "Invalid verification code.");
+    if (!valid) {
+      await prisma.emailVerification.update({ where: { id: verification.id }, data: { attempts: { increment: 1 } } });
+      const remaining = MAX_OTP_ATTEMPTS - verification.attempts - 1;
+      throw new AppError(401, "INVALID_VERIFICATION_CODE", `Invalid verification code. ${remaining} attempt${remaining !== 1 ? "s" : ""} remaining.`);
+    }
 
     const verifiedUser = await prisma.user.update({
       where: { id: user.id },

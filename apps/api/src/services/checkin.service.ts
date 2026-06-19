@@ -1,6 +1,7 @@
 import { checkInSchema, nfcCheckInSchema } from "@velvet-rope/shared";
 import { AppError } from "../lib/http";
 import { prisma } from "../lib/prisma";
+import { emailService } from "./email.service";
 
 export const checkInService = {
   async validate(staffId: string, input: unknown) {
@@ -39,6 +40,8 @@ async function validateTicket(staffId: string, input: { qrCodePayload?: string; 
       throw new AppError(403, "SCAN_NOT_ALLOWED", "You are not assigned to scan this event.");
     }
 
+    const checkedInAt = new Date().toISOString();
+
     await prisma.ticket.update({
       where: { id: ticket.id },
       data: {
@@ -48,12 +51,22 @@ async function validateTicket(staffId: string, input: { qrCodePayload?: string; 
       }
     });
 
+    emailService.sendCheckInConfirmation({
+      email: ticket.user.email,
+      fullName: ticket.user.profile?.fullName ?? ticket.user.email,
+      eventTitle: ticket.event.title,
+      ticketCode: ticket.code,
+      ticketType: ticket.ticketType.name,
+      checkedInAt,
+      gate: input.gate
+    }).catch((err: unknown) => console.error("[checkin] email failed:", err));
+
     return {
       valid: true,
       eventName: ticket.event.title,
       attendeeName: ticket.user.profile?.fullName ?? ticket.user.email,
       ticketType: ticket.ticketType.kind,
-      checkedInAt: new Date().toISOString(),
+      checkedInAt,
       entryMethod: input.ticketId ? "NFC" : "QR"
     };
 }

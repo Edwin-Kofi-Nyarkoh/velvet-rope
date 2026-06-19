@@ -12,8 +12,7 @@ import type { EventSummary } from "@velvet-rope/shared";
  * Hero right-panel: rotating event badge + featured event card.
  * Both driven by one shared index so badge and image always match.
  *
- * Cascade: live events → upcoming events → all events.
- * This ensures something always shows as long as the API is reachable.
+ * Cascade: live events → popular upcoming events → popular published events.
  */
 export function HeroLiveSection() {
   const [index, setIndex] = useState(0);
@@ -26,20 +25,20 @@ export function HeroLiveSection() {
   });
 
   const upcomingQuery = useQuery({
-    queryKey: ["hero-upcoming-events"],
-    queryFn:  () => api.events("?filter=upcoming"),
+    queryKey: ["hero-upcoming-popular"],
+    queryFn:  () => api.events("?filter=upcoming&sort=popular"),
     staleTime: 60_000,
     retry: 1,
     // only run if live query finished and came back empty
     enabled: liveQuery.isSuccess && (liveQuery.data?.data?.length ?? 0) === 0
   });
 
-  const allQuery = useQuery({
-    queryKey: ["hero-all-events"],
-    queryFn:  () => api.events(),
+  const popularQuery = useQuery({
+    queryKey: ["hero-popular-events"],
+    queryFn:  () => api.events("?filter=popular"),
     staleTime: 60_000,
     retry: 1,
-    // only run if both previous queries finished empty
+    // only run if upcoming also came back empty
     enabled:
       upcomingQuery.isSuccess && (upcomingQuery.data?.data?.length ?? 0) === 0
   });
@@ -47,18 +46,18 @@ export function HeroLiveSection() {
   const { events, label } = useMemo((): { events: EventSummary[]; label: string } => {
     const live     = liveQuery.data?.data ?? [];
     const upcoming = upcomingQuery.data?.data ?? [];
-    const all      = allQuery.data?.data ?? [];
+    const popular  = popularQuery.data?.data ?? [];
 
     if (live.length)     return { events: live,     label: "Live now"  };
     if (upcoming.length) return { events: upcoming,  label: "Upcoming"  };
-    if (all.length)      return { events: all,       label: "Featured"  };
+    if (popular.length)  return { events: popular,   label: "Popular"   };
     return { events: [], label: "Featured" };
-  }, [liveQuery.data, upcomingQuery.data, allQuery.data]);
+  }, [liveQuery.data, upcomingQuery.data, popularQuery.data]);
 
   const isLoading =
     liveQuery.isLoading ||
     (liveQuery.isSuccess && (liveQuery.data?.data?.length ?? 0) === 0 && upcomingQuery.isLoading) ||
-    (upcomingQuery.isSuccess && (upcomingQuery.data?.data?.length ?? 0) === 0 && allQuery.isLoading);
+    (upcomingQuery.isSuccess && (upcomingQuery.data?.data?.length ?? 0) === 0 && popularQuery.isLoading);
 
   useEffect(() => {
     if (events.length <= 1) return;

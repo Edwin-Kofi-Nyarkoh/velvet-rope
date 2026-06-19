@@ -21,7 +21,7 @@ async function paystackInitialize(input: { email: string; amount: number; refere
     })
   });
   const payload = await response.json();
-  if (!response.ok || !payload.status) throw new AppError(502, "PAYSTACK_ERROR", "Unable to initialize payment.", payload);
+  if (!response.ok || !payload.status) throw new AppError(502, "PAYSTACK_ERROR", "Payment service is unavailable. Please try again.");
   return payload.data as { authorization_url: string; reference: string };
 }
 
@@ -108,7 +108,7 @@ export const paymentService = {
       headers: { Authorization: `Bearer ${env.PAYSTACK_SECRET_KEY}` }
     });
     const payload = await response.json();
-    if (!response.ok || !payload.status) throw new AppError(502, "PAYSTACK_ERROR", "Unable to verify payment.", payload);
+    if (!response.ok || !payload.status) throw new AppError(502, "PAYSTACK_ERROR", "Payment verification service is unavailable. Please try again.");
     if (payload.data.status !== "success") throw new AppError(402, "PAYMENT_NOT_SUCCESSFUL", "Payment is not successful yet.");
 
     const result = await prisma.$transaction(async (tx) => {
@@ -194,7 +194,12 @@ export const paymentService = {
     }
 
     return {
-      ...result.order,
+      id: result.order.id,
+      status: result.order.status,
+      reference: result.order.reference,
+      amount: result.order.amount,
+      currency: result.order.currency,
+      eventTitle: result.order.event.title,
       tickets: result.tickets.map((ticket) => ({
         id: ticket.id,
         eventTitle: result.order.event.title,

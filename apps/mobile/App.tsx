@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { LogBox, useColorScheme } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as SecureStore from "expo-secure-store";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
 import { PaystackProvider } from "react-native-paystack-webview";
@@ -14,6 +15,8 @@ import {
   EventDetailsScreen,
   HomeFeedScreen,
   InvitationsScreen,
+  NotificationsScreen,
+  OrdersScreen,
   OrganizerQuickScreen,
   ScannerScreen,
   SettingsScreen,
@@ -44,12 +47,14 @@ export default function App() {
 
   const theme           = getTheme(themeMode, systemDark);
   const canSeeOrganizer = role === "ORGANIZER" || role === "ADMIN" || role === "SUPER_ADMIN";
-  const showNav         = !["auth", "event", "scanner"].includes(screen);
+  const showNav         = !["auth", "event", "scanner", "notifications", "orders"].includes(screen);
 
   useEffect(() => {
-    AsyncStorage.multiGet(["velvet_user", "velvet_theme"]).then((pairs) => {
-      const rawUser  = pairs[0]?.[1];
-      const rawTheme = pairs[1]?.[1];
+    void (async () => {
+      const [rawUser, rawTheme] = await Promise.all([
+        SecureStore.getItemAsync("velvet_user"),
+        AsyncStorage.getItem("velvet_theme")
+      ]);
       if (rawUser) {
         const user = JSON.parse(rawUser) as { role?: string };
         setRole(user.role ?? null);
@@ -58,7 +63,7 @@ export default function App() {
       if (rawTheme === "light" || rawTheme === "dark" || rawTheme === "system") {
         setThemeMode(rawTheme as ThemeMode);
       }
-    });
+    })();
   }, []);
 
   const updateTheme = useCallback(async (next: ThemeMode) => {
@@ -122,7 +127,9 @@ export default function App() {
               notify={notify}
             />
           )}
-          {screen === "scanner"  && <ScannerScreen       go={setScreen} theme={theme} notify={notify} />}
+          {screen === "scanner"       && <ScannerScreen        go={setScreen} theme={theme} notify={notify} />}
+          {screen === "notifications" && <NotificationsScreen   go={setScreen} theme={theme} notify={notify} />}
+          {screen === "orders"        && <OrdersScreen          go={setScreen} theme={theme} />}
           {screen === "organizer" && canSeeOrganizer && (
             <OrganizerQuickScreen go={setScreen} theme={theme} />
           )}

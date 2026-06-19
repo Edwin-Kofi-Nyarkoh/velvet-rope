@@ -24,10 +24,35 @@ export function readWebAuthUser(): WebAuthUser | null {
   };
 }
 
+function isHttps() {
+  return typeof window !== "undefined" && window.location.protocol === "https:";
+}
+
+function setSessionCookie() {
+  const secure = isHttps() ? "; Secure" : "";
+  document.cookie = `velvet_auth=1; path=/; SameSite=Lax; max-age=2592000${secure}`;
+}
+
+function clearSessionCookie() {
+  const secure = isHttps() ? "; Secure" : "";
+  document.cookie = `velvet_auth=; path=/; SameSite=Lax; max-age=0${secure}`;
+}
+
+export function storeWebAuth(tokens: { accessToken: string; refreshToken: string; user: unknown }) {
+  localStorage.setItem("velvet_access_token", tokens.accessToken);
+  localStorage.setItem("velvet_refresh_token", tokens.refreshToken);
+  localStorage.setItem("velvet_user", JSON.stringify(tokens.user));
+  setSessionCookie();
+  window.dispatchEvent(new Event("velvet-auth"));
+}
+
 export function clearWebAuth() {
+  const token = localStorage.getItem("velvet_access_token");
+  if (token) api.logout(token).catch(() => undefined);
   localStorage.removeItem("velvet_access_token");
   localStorage.removeItem("velvet_refresh_token");
   localStorage.removeItem("velvet_user");
+  clearSessionCookie();
   window.dispatchEvent(new Event("velvet-auth"));
 }
 
@@ -50,10 +75,7 @@ export async function getWebAccessToken() {
 
   try {
     const result = await api.refresh(refreshToken);
-    localStorage.setItem("velvet_access_token", result.data.accessToken);
-    localStorage.setItem("velvet_refresh_token", result.data.refreshToken);
-    localStorage.setItem("velvet_user", JSON.stringify(result.data.user));
-    window.dispatchEvent(new Event("velvet-auth"));
+    storeWebAuth({ accessToken: result.data.accessToken, refreshToken: result.data.refreshToken, user: result.data.user });
     return result.data.accessToken;
   } catch {
     clearWebAuth();
