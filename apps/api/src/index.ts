@@ -11,6 +11,7 @@ app.set("trust proxy", 1);
 app.use(securityMiddleware);
 app.use(globalLimiter);
 app.get("/", (_req, res) => sendData(res, { name: "Velvet Rope API", version: "0.1.0" }));
+app.get("/health", (_req, res) => sendData(res, { ok: true }));
 app.use("/api", apiRouter);
 app.use(errorHandler);
 
