@@ -5,14 +5,16 @@ import { AppFooter } from "@/components/shell";
 
 export const metadata: Metadata = {
   title: {
-    default:  "Velvet Rope",
+    default: "Velvet Rope",
     template: "%s | Velvet Rope"
   },
   description:
     "The VIP event platform for everyone. Skip the line, own the night. Premium ticketing, invitations, QR check-ins, vendors, and analytics.",
+  keywords: ["events", "tickets", "VIP", "nightlife", "Ghana", "Accra"],
   openGraph: {
-    type:   "website",
-    locale: "en_US"
+    type: "website",
+    locale: "en_US",
+    siteName: "Velvet Rope"
   }
 };
 
