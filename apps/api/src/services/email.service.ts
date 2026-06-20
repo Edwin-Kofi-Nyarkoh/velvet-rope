@@ -4,6 +4,17 @@ import { env } from "../env";
 
 const hasSmtp = Boolean(env.SMTP_HOST && env.SMTP_PORT && env.SMTP_USER && env.SMTP_PASS);
 
+if (hasSmtp) {
+  console.log(`[email] SMTP configured — host=${env.SMTP_HOST} port=${env.SMTP_PORT} user=${env.SMTP_USER} from=${env.SMTP_FROM}`);
+} else {
+  console.warn(`[email] SMTP NOT configured — emails will be logged to console only. Missing: ${[
+    !env.SMTP_HOST && "SMTP_HOST",
+    !env.SMTP_PORT && "SMTP_PORT",
+    !env.SMTP_USER && "SMTP_USER",
+    !env.SMTP_PASS && "SMTP_PASS"
+  ].filter(Boolean).join(", ")}`);
+}
+
 const transporter = hasSmtp
   ? nodemailer.createTransport({
       host: env.SMTP_HOST,
@@ -12,6 +23,14 @@ const transporter = hasSmtp
       auth: { user: env.SMTP_USER, pass: env.SMTP_PASS }
     })
   : nodemailer.createTransport({ jsonTransport: true });
+
+if (hasSmtp) {
+  transporter.verify().then(() => {
+    console.log("[email] SMTP connection verified — ready to send");
+  }).catch((err: unknown) => {
+    console.error("[email] SMTP connection FAILED — check credentials:", err instanceof Error ? err.message : err);
+  });
+}
 
 export const emailService = {
   async sendVerificationCode(input: { email: string; fullName: string; code: string }) {
