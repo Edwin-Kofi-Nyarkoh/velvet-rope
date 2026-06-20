@@ -3,7 +3,7 @@ import { FlatList, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Tex
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, Calendar, Check, Home, LogIn, MessageSquare, Moon, QrCode, Search, Settings, ShieldCheck, ShoppingBag, Sun, Ticket, Users, WalletCards, Wifi, X as XIcon } from "lucide-react-native";
+import { Bell, Calendar, Check, Edit2, Home, LogIn, MessageSquare, Moon, Plus, QrCode, Search, Settings, ShieldCheck, ShoppingBag, Star, Sun, Ticket, Trash2, Users, WalletCards, Wifi, X as XIcon } from "lucide-react-native";
 import { usePaystack } from "react-native-paystack-webview";
 import type { EventSummary } from "@velvet-rope/shared";
 import { Button, Card, Screen, Skeleton, Stat } from "./components";
@@ -75,11 +75,14 @@ function isAuthError(error: unknown): boolean {
 }
 
 export function AuthScreen({ go, onRole, theme, notify }: { go: (screen: string) => void; onRole: (role: string | null) => void; theme: AppTheme; notify: Notify }) {
-  const [mode, setMode] = useState<"login" | "register" | "verify">("login");
+  const [mode, setMode] = useState<"login" | "register" | "verify" | "forgot" | "reset">("login");
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
+  const [resetToken, setResetToken] = useState("");
+  const [resetPw, setResetPw] = useState("");
+  const [resetConfirmPw, setResetConfirmPw] = useState("");
 
   const loginMutation = useMutation({
     mutationFn: () => api.login({ email, password }),
@@ -112,32 +115,87 @@ export function AuthScreen({ go, onRole, theme, notify }: { go: (screen: string)
     onError: (error) => notify(error.message, "Verification failed", "error")
   });
 
-  const activeMutation = mode === "login" ? loginMutation : mode === "register" ? registerMutation : verifyMutation;
+  const forgotMutation = useMutation({
+    mutationFn: () => api.forgotPassword(email),
+    onSuccess: () => {
+      notify("Check your email for a reset link. Then come back and tap 'I have a reset token'.", "Reset link sent", "success");
+    },
+    onError: (error) => notify(error.message, "Reset failed", "error")
+  });
+
+  const resetMutation = useMutation({
+    mutationFn: () => {
+      if (resetPw !== resetConfirmPw) throw new Error("Passwords do not match.");
+      if (resetPw.length < 8) throw new Error("Password must be at least 8 characters.");
+      return api.resetPassword(resetToken, resetPw);
+    },
+    onSuccess: () => {
+      notify("Password updated. Please log in with your new password.", "Password reset", "success");
+      setMode("login");
+      setResetToken(""); setResetPw(""); setResetConfirmPw("");
+    },
+    onError: (error) => notify(error.message, "Reset failed", "error")
+  });
+
+  const activeMutation = mode === "login" ? loginMutation : mode === "register" ? registerMutation : mode === "verify" ? verifyMutation : mode === "forgot" ? forgotMutation : resetMutation;
+
+  const modeTitle: Record<typeof mode, string> = { login: "Welcome back", register: "Create account", verify: "Verify email", forgot: "Reset password", reset: "New password" };
+  const modeCopy: Record<typeof mode, string> = {
+    login: "Use the same secure account across web, Android, and iOS.",
+    register: "Use the same secure account across web, Android, and iOS.",
+    verify: "Enter the 6-digit code sent to your email. It expires in 30 minutes.",
+    forgot: "Enter your email and we'll send you a reset link.",
+    reset: "Paste the token from your reset email, then set a new password."
+  };
+  const modeButton: Record<typeof mode, string> = { login: "Log in", register: "Create account", verify: "Verify account", forgot: "Send reset link", reset: "Set new password" };
 
   return (
     <Screen theme={theme}>
       <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-        <Text style={[styles.title, { color: theme.colors.ink }]}>{mode === "login" ? "Welcome back" : mode === "register" ? "Create account" : "Verify email"}</Text>
-        <Text style={[styles.copy, { color: theme.colors.slate }]}>
-          {mode === "verify" ? "Enter the 6-digit code sent to your email. It expires in 30 minutes." : "Use the same secure account across web, Android, and iOS."}
-        </Text>
+        <Text style={[styles.title, { color: theme.colors.ink }]}>{modeTitle[mode]}</Text>
+        <Text style={[styles.copy, { color: theme.colors.slate }]}>{modeCopy[mode]}</Text>
         {mode === "register" && <TextInput style={inputStyle(theme)} placeholder="Full name" placeholderTextColor={theme.colors.slate} value={fullName} onChangeText={setFullName} />}
-        <TextInput style={inputStyle(theme)} placeholder="Email" placeholderTextColor={theme.colors.slate} autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} />
-        {mode !== "verify" && <TextInput style={inputStyle(theme)} placeholder="Password" placeholderTextColor={theme.colors.slate} secureTextEntry value={password} onChangeText={setPassword} />}
+        {(mode === "login" || mode === "register" || mode === "forgot") && (
+          <TextInput style={inputStyle(theme)} placeholder="Email" placeholderTextColor={theme.colors.slate} autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} />
+        )}
+        {(mode === "login" || mode === "register") && (
+          <TextInput style={inputStyle(theme)} placeholder="Password" placeholderTextColor={theme.colors.slate} secureTextEntry value={password} onChangeText={setPassword} />
+        )}
         {mode === "verify" && <TextInput style={inputStyle(theme)} placeholder="Verification code" placeholderTextColor={theme.colors.slate} keyboardType="number-pad" value={code} onChangeText={setCode} />}
+        {mode === "reset" && (
+          <>
+            <TextInput style={inputStyle(theme)} placeholder="Reset token (from email link)" placeholderTextColor={theme.colors.slate} autoCapitalize="none" value={resetToken} onChangeText={setResetToken} />
+            <TextInput style={inputStyle(theme)} placeholder="New password" placeholderTextColor={theme.colors.slate} secureTextEntry value={resetPw} onChangeText={setResetPw} />
+            <TextInput style={inputStyle(theme)} placeholder="Confirm new password" placeholderTextColor={theme.colors.slate} secureTextEntry value={resetConfirmPw} onChangeText={setResetConfirmPw} />
+          </>
+        )}
         {activeMutation.isError && <Text style={[styles.error, { color: theme.colors.danger }]}>{activeMutation.error.message}</Text>}
-        <Button
-          theme={theme}
-          label={activeMutation.isPending ? "Please wait..." : mode === "login" ? "Log in" : mode === "register" ? "Create account" : "Verify account"}
-          disabled={activeMutation.isPending}
-          onPress={() => activeMutation.mutate()}
-        />
-        <Pressable onPress={() => setMode(mode === "login" ? "register" : "login")}>
-          <Text style={[styles.link, { color: theme.colors.slate }]}>{mode === "login" ? "Create a new account" : "Back to login"}</Text>
-        </Pressable>
-        <Pressable onPress={() => go("home")}>
-          <Text style={[styles.link, { color: theme.colors.gold }]}>Continue as guest</Text>
-        </Pressable>
+        <Button theme={theme} label={activeMutation.isPending ? "Please wait..." : modeButton[mode]} disabled={activeMutation.isPending} onPress={() => activeMutation.mutate()} />
+        {(mode === "register" || mode === "forgot" || mode === "reset") && (
+          <Pressable onPress={() => setMode("login")}>
+            <Text style={[styles.link, { color: theme.colors.slate }]}>Back to login</Text>
+          </Pressable>
+        )}
+        {mode === "login" && (
+          <Pressable onPress={() => setMode("register")}>
+            <Text style={[styles.link, { color: theme.colors.slate }]}>Create a new account</Text>
+          </Pressable>
+        )}
+        {mode === "login" && (
+          <Pressable onPress={() => setMode("forgot")}>
+            <Text style={[styles.link, { color: theme.colors.slate }]}>Forgot password?</Text>
+          </Pressable>
+        )}
+        {mode === "forgot" && (
+          <Pressable onPress={() => setMode("reset")}>
+            <Text style={[styles.link, { color: theme.colors.slate }]}>I have a reset token</Text>
+          </Pressable>
+        )}
+        {(mode === "login" || mode === "register") && (
+          <Pressable onPress={() => go("home")}>
+            <Text style={[styles.link, { color: theme.colors.gold }]}>Continue as guest</Text>
+          </Pressable>
+        )}
       </ScrollView>
     </Screen>
   );
@@ -449,6 +507,13 @@ export function EventDetailsScreen({ slug, go, theme, isAuthenticated, notify }:
         <Text style={[styles.title, { color: theme.colors.ink }]}>{event.title}</Text>
         <Text style={[styles.copy, { color: theme.colors.slate }]}>{event.description}</Text>
         <Text style={[styles.muted, { color: theme.colors.slate }]}>{event.venueName}, {event.city}</Text>
+        <Text style={[styles.muted, { color: theme.colors.slate }]}>
+          {new Date(event.startsAt).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+          {event.endsAt ? ` — ${new Date(event.endsAt).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""}
+        </Text>
+        {(event as Record<string, unknown> & { organizer?: { profile?: { fullName?: string } | null } | null }).organizer?.profile?.fullName && (
+          <Text style={[styles.muted, { color: theme.colors.slate }]}>By {(event as Record<string, unknown> & { organizer?: { profile?: { fullName?: string } | null } | null }).organizer!.profile!.fullName}</Text>
+        )}
         <Card theme={theme} style={{ marginTop: 18 }}>
           <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Tickets</Text>
           {ticketTypes.map((ticket) => {
@@ -614,8 +679,11 @@ export function InvitationsScreen({ go, theme }: { go: (screen: string) => void;
           onRefresh={() => void invitationsQuery.refetch()}
           renderItem={({ item }) => (
             <Card theme={theme}>
-              <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>{String(item.eventTitle)}</Text>
-              <Text style={[styles.muted, { color: theme.colors.slate }]}>From {String(item.sender)} · {String(item.status)}</Text>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <Text style={[styles.cardTitle, { color: theme.colors.ink, flex: 1 }]}>{String(item.eventTitle)}</Text>
+                <Text style={{ fontSize: 11, fontWeight: "800", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 99, overflow: "hidden", color: "#000", backgroundColor: String(item.status) === "ACCEPTED" ? "#22c55e" : String(item.status) === "DECLINED" ? "#ef4444" : theme.colors.gold }}>{String(item.status)}</Text>
+              </View>
+              <Text style={[styles.muted, { color: theme.colors.slate }]}>From {String(item.sender)}</Text>
               {item.message ? <Text style={[styles.copy, { color: theme.colors.slate }]}>{String(item.message)}</Text> : null}
               {String(item.status) === "PENDING" && (
                 <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
@@ -650,9 +718,11 @@ export function SettingsScreen({ go, onRole, theme, notify }: { go: (screen: str
   const [phone, setPhone] = useState("");
   const [city, setCity] = useState("");
   const [country, setCountry] = useState("");
+  const [socialProvider, setSocialProvider] = useState<"X" | "FACEBOOK" | "LINKEDIN" | "INSTAGRAM" | "TIKTOK">("X");
   const [socialHandle, setSocialHandle] = useState("");
   const [socialName, setSocialName] = useState("");
   const [followers, setFollowers] = useState("0");
+  const [evidenceUrl, setEvidenceUrl] = useState("");
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
@@ -688,7 +758,7 @@ export function SettingsScreen({ go, onRole, theme, notify }: { go: (screen: str
   });
 
   const socialMutation = useMutation({
-    mutationFn: async () => withMobileAuth((token) => api.upsertSocialAccount(token, { provider: "X", handle: socialHandle, displayName: socialName || socialHandle, followerCount: Number(followers) || 0 })),
+    mutationFn: async () => withMobileAuth((token) => api.upsertSocialAccount(token, { provider: socialProvider, handle: socialHandle, displayName: socialName || socialHandle, followerCount: Number(followers) || 0 })),
     onSuccess: () => {
       notify("Social account linked.", "VIP verification", "success");
       void vipQuery.refetch();
@@ -697,7 +767,7 @@ export function SettingsScreen({ go, onRole, theme, notify }: { go: (screen: str
   });
 
   const vipMutation = useMutation({
-    mutationFn: async () => withMobileAuth((token) => api.submitVipVerification(token, { provider: "X", handle: socialHandle })),
+    mutationFn: async () => withMobileAuth((token) => api.submitVipVerification(token, { provider: socialProvider, handle: socialHandle, evidenceUrl: evidenceUrl || undefined })),
     onSuccess: () => {
       notify("VIP verification request submitted.", "VIP verification", "success");
       void vipQuery.refetch();
@@ -748,16 +818,24 @@ export function SettingsScreen({ go, onRole, theme, notify }: { go: (screen: str
         )}
         <Card theme={theme} style={{ marginTop: 18 }}>
           <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>VIP and social verification</Text>
-          <Text style={[styles.copy, { color: theme.colors.slate }]}>Link your X account for VIP influencer checks and friends-attending signals.</Text>
-          <TextInput style={inputStyle(theme)} placeholder="X handle" placeholderTextColor={theme.colors.slate} value={socialHandle} onChangeText={setSocialHandle} />
+          <Text style={[styles.copy, { color: theme.colors.slate }]}>Link a social account for VIP influencer checks and friends-attending signals.</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 14 }} contentContainerStyle={{ gap: 8 }}>
+            {(["X", "FACEBOOK", "LINKEDIN", "INSTAGRAM", "TIKTOK"] as const).map((p) => (
+              <Pressable key={p} onPress={() => setSocialProvider(p)} style={{ paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, borderWidth: 1, borderColor: socialProvider === p ? theme.colors.gold : theme.colors.line, backgroundColor: socialProvider === p ? theme.colors.gold + "20" : "transparent" }}>
+                <Text style={{ color: socialProvider === p ? theme.colors.gold : theme.colors.slate, fontWeight: "800", fontSize: 12 }}>{p}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+          <TextInput style={inputStyle(theme)} placeholder={`${socialProvider} handle`} placeholderTextColor={theme.colors.slate} autoCapitalize="none" value={socialHandle} onChangeText={setSocialHandle} />
           <TextInput style={inputStyle(theme)} placeholder="Display name" placeholderTextColor={theme.colors.slate} value={socialName} onChangeText={setSocialName} />
           <TextInput style={inputStyle(theme)} placeholder="Follower count" placeholderTextColor={theme.colors.slate} keyboardType="number-pad" value={followers} onChangeText={setFollowers} />
+          <TextInput style={inputStyle(theme)} placeholder="Evidence URL (optional, e.g. profile link)" placeholderTextColor={theme.colors.slate} autoCapitalize="none" keyboardType="url" value={evidenceUrl} onChangeText={setEvidenceUrl} />
           <View style={{ height: 12 }} />
-          <Button theme={theme} label={socialMutation.isPending ? "Linking..." : "Link X account"} disabled={!socialHandle || socialMutation.isPending} onPress={() => socialMutation.mutate()} />
+          <Button theme={theme} label={socialMutation.isPending ? "Linking..." : `Link ${socialProvider} account`} disabled={!socialHandle || socialMutation.isPending} onPress={() => socialMutation.mutate()} />
           <View style={{ height: 10 }} />
           <Button theme={theme} label={vipMutation.isPending ? "Submitting..." : "Request VIP verification"} secondary disabled={!socialHandle || vipMutation.isPending} onPress={() => vipMutation.mutate()} />
           {vipQuery.data?.data.accounts.map((account) => (
-            <Text key={account.id} style={[styles.muted, { color: theme.colors.slate }]}>{account.provider} @{account.handle} - {account.vipStatus}</Text>
+            <Text key={account.id} style={[styles.muted, { color: theme.colors.slate }]}>{account.provider} @{account.handle} — {account.vipStatus}</Text>
           ))}
         </Card>
 
@@ -819,15 +897,48 @@ export function ScannerScreen({ go, theme, notify }: { go: (screen: string) => v
 
 export function OrganizerQuickScreen({ go, theme }: { go?: (screen: string) => void; theme: AppTheme }) {
   const queryClient = useQueryClient();
-  const [commEventId,  setCommEventId]  = useState("");
+
+  // Communication form
+  const [commEventId, setCommEventId] = useState("");
   const [commAudience, setCommAudience] = useState<"STAFF" | "VENDORS" | "ALL">("ALL");
-  const [commSubject,  setCommSubject]  = useState("");
-  const [commBody,     setCommBody]     = useState("");
+  const [commSubject, setCommSubject] = useState("");
+  const [commBody, setCommBody] = useState("");
+
+  // Event editing
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editVenue, setEditVenue] = useState("");
+  const [editCity, setEditCity] = useState("");
+
+  // Staff form
+  const [staffEmail, setStaffEmail] = useState("");
+  const [staffEventId, setStaffEventId] = useState("");
+
+  // Ticket type form
+  const [ttEventId, setTtEventId] = useState("");
+  const [ttName, setTtName] = useState("");
+  const [ttKind, setTtKind] = useState<"REGULAR" | "VIP" | "VVIP" | "TABLE">("REGULAR");
+  const [ttPrice, setTtPrice] = useState("");
+  const [ttQty, setTtQty] = useState("");
+
+  // Vendor form
+  const [vendorEmail, setVendorEmail] = useState("");
+  const [vendorBusiness, setVendorBusiness] = useState("");
+  const [vendorCategory, setVendorCategory] = useState("");
+
+  // Seating
+  const [assignSeatId, setAssignSeatId] = useState("");
+  const [assignTicketId, setAssignTicketId] = useState("");
 
   const dashboardQuery = useQuery({ queryKey: ["organizer-dashboard"], queryFn: async () => withMobileAuth((token) => api.organizerDashboard(token)), retry: false });
   const transactionsQuery = useQuery({ queryKey: ["vendor-transactions"], queryFn: async () => withMobileAuth((token) => api.vendorTransactions(token)), retry: false });
   const messagesQuery = useQuery({ queryKey: ["communications"], queryFn: async () => withMobileAuth((token) => api.communications(token)), retry: false });
   const socialQuery = useQuery({ queryKey: ["hashtag-analytics"], queryFn: async () => withMobileAuth((token) => api.hashtagAnalytics(token)), retry: false });
+  const staffQuery = useQuery({ queryKey: ["staff"], queryFn: async () => withMobileAuth((token) => api.staff(token)), retry: false });
+  const attendeesQuery = useQuery({ queryKey: ["organizer-attendees"], queryFn: async () => withMobileAuth((token) => api.organizerAttendees(token)), retry: false });
+  const ticketTypesQuery = useQuery({ queryKey: ["ticket-types"], queryFn: async () => withMobileAuth((token) => api.ticketTypes(token)), retry: false });
+  const seatingQuery = useQuery({ queryKey: ["organizer-seating"], queryFn: async () => withMobileAuth((token) => api.organizerSeating(token)), retry: false });
+  const vendorsQuery = useQuery({ queryKey: ["vendors"], queryFn: async () => withMobileAuth((token) => api.vendors(token)), retry: false });
 
   const confirmTxMutation = useMutation({
     mutationFn: async (id: string) => withMobileAuth((token) => api.confirmVendorTransaction(token, id)),
@@ -835,18 +946,63 @@ export function OrganizerQuickScreen({ go, theme }: { go?: (screen: string) => v
   });
 
   const sendCommMutation = useMutation({
-    mutationFn: async () => withMobileAuth((token) =>
-      api.createCommunication(token, { eventId: commEventId, audience: commAudience, subject: commSubject, body: commBody })
-    ),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["communications"] });
-      setCommSubject(""); setCommBody("");
-    }
+    mutationFn: async () => withMobileAuth((token) => api.createCommunication(token, { eventId: commEventId, audience: commAudience, subject: commSubject, body: commBody })),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["communications"] }); setCommSubject(""); setCommBody(""); }
+  });
+
+  const updateEventMutation = useMutation({
+    mutationFn: async (id: string) => withMobileAuth((token) => api.updateEvent(token, id, { title: editTitle, venueName: editVenue, city: editCity })),
+    onSuccess: () => { setEditingEventId(null); void dashboardQuery.refetch(); }
+  });
+
+  const deleteEventMutation = useMutation({
+    mutationFn: async (id: string) => withMobileAuth((token) => api.deleteEvent(token, id)),
+    onSuccess: () => void dashboardQuery.refetch()
+  });
+
+  const popularityMutation = useMutation({
+    mutationFn: async ({ id, isPopular }: { id: string; isPopular: boolean }) => withMobileAuth((token) => api.updateEventPopularity(token, id, { isPopular })),
+    onSuccess: () => void dashboardQuery.refetch()
+  });
+
+  const addStaffMutation = useMutation({
+    mutationFn: async () => withMobileAuth((token) => api.addStaff(token, { email: staffEmail, eventId: staffEventId, canScanTickets: true, canManageGuests: true })),
+    onSuccess: () => { setStaffEmail(""); void staffQuery.refetch(); }
+  });
+
+  const removeStaffMutation = useMutation({
+    mutationFn: async (id: string) => withMobileAuth((token) => api.removeStaff(token, id)),
+    onSuccess: () => void staffQuery.refetch()
+  });
+
+  const createTicketTypeMutation = useMutation({
+    mutationFn: async () => withMobileAuth((token) => api.createTicketType(token, { eventId: ttEventId, name: ttName, kind: ttKind, price: Number(ttPrice), currency: "GHS", quantity: Number(ttQty) })),
+    onSuccess: () => { setTtName(""); setTtPrice(""); setTtQty(""); void ticketTypesQuery.refetch(); }
+  });
+
+  const addVendorMutation = useMutation({
+    mutationFn: async () => withMobileAuth((token) => api.addVendor(token, { email: vendorEmail, businessName: vendorBusiness, category: vendorCategory })),
+    onSuccess: () => { setVendorEmail(""); setVendorBusiness(""); setVendorCategory(""); void vendorsQuery.refetch(); }
+  });
+
+  const removeVendorMutation = useMutation({
+    mutationFn: async (id: string) => withMobileAuth((token) => api.removeVendor(token, id)),
+    onSuccess: () => void vendorsQuery.refetch()
+  });
+
+  const assignSeatMutation = useMutation({
+    mutationFn: async () => withMobileAuth((token) => api.assignSeat(token, { seatId: assignSeatId, ticketId: assignTicketId })),
+    onSuccess: () => { setAssignSeatId(""); setAssignTicketId(""); void seatingQuery.refetch(); }
   });
 
   const data = dashboardQuery.data?.data as Record<string, unknown> | undefined;
   const metrics = (data?.metrics ?? {}) as Record<string, unknown>;
   const events = (data?.events ?? []) as Record<string, unknown>[];
+  const staffList = (staffQuery.data?.data ?? []) as Record<string, unknown>[];
+  const attendeeList = (attendeesQuery.data?.data ?? []) as Record<string, unknown>[];
+  const ticketTypeList = (ticketTypesQuery.data?.data ?? []) as Record<string, unknown>[];
+  const vendorList = (vendorsQuery.data?.data ?? []) as Record<string, unknown>[];
+  const seatingData = (seatingQuery.data?.data ?? []) as Record<string, unknown>[];
   const socialSummary = ((socialQuery.data?.data as Record<string, unknown> | undefined)?.summary ?? []) as Record<string, unknown>[];
 
   return (
@@ -854,11 +1010,13 @@ export function OrganizerQuickScreen({ go, theme }: { go?: (screen: string) => v
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 156 }}
-        refreshControl={<RefreshControl refreshing={dashboardQuery.isRefetching} onRefresh={() => { void dashboardQuery.refetch(); void transactionsQuery.refetch(); void messagesQuery.refetch(); void socialQuery.refetch(); }} tintColor={theme.colors.gold} colors={[theme.colors.gold]} progressBackgroundColor={theme.colors.card} />}
+        refreshControl={<RefreshControl refreshing={dashboardQuery.isRefetching} onRefresh={() => { void dashboardQuery.refetch(); void transactionsQuery.refetch(); void messagesQuery.refetch(); void socialQuery.refetch(); void staffQuery.refetch(); void attendeesQuery.refetch(); void ticketTypesQuery.refetch(); void vendorsQuery.refetch(); void seatingQuery.refetch(); }} tintColor={theme.colors.gold} colors={[theme.colors.gold]} progressBackgroundColor={theme.colors.card} />}
       >
         <Text style={[styles.title, { color: theme.colors.ink }]}>Organizer dashboard</Text>
         <Button theme={theme} label="Open QR / NFC scanner" secondary onPress={() => go?.("scanner")} />
         <View style={{ height: 14 }} />
+
+        {/* Metrics */}
         {dashboardQuery.isLoading ? (
           <TicketSkeleton theme={theme} />
         ) : dashboardQuery.isError ? (
@@ -876,25 +1034,199 @@ export function OrganizerQuickScreen({ go, theme }: { go?: (screen: string) => v
               <Stat theme={theme} label="Check-ins" value={String(metrics.checkIns ?? 0)} />
               <Stat theme={theme} label="Vendors" value={String(metrics.vendors ?? 0)} />
             </View>
-            <Card theme={theme}>
-              <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Events</Text>
-              {events.map((event) => (
-                <Text key={String(event.id)} style={[styles.muted, { color: theme.colors.slate }]}>{String(event.title)} - {String(event.ticketsSold)} sold - {String(event.checkIns)} check-ins</Text>
-              ))}
-            </Card>
           </>
         )}
+
+        {/* Events management */}
+        <Card theme={theme} style={{ marginTop: 4 }}>
+          <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Events</Text>
+          {events.map((event) => (
+            <View key={String(event.id)} style={{ marginTop: 14, borderTopWidth: 1, borderTopColor: theme.colors.line, paddingTop: 12 }}>
+              {editingEventId === String(event.id) ? (
+                <>
+                  <TextInput style={inputStyle(theme)} placeholder="Title" placeholderTextColor={theme.colors.slate} value={editTitle} onChangeText={setEditTitle} />
+                  <TextInput style={inputStyle(theme)} placeholder="Venue name" placeholderTextColor={theme.colors.slate} value={editVenue} onChangeText={setEditVenue} />
+                  <TextInput style={inputStyle(theme)} placeholder="City" placeholderTextColor={theme.colors.slate} value={editCity} onChangeText={setEditCity} />
+                  <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+                    <View style={{ flex: 1 }}><Button theme={theme} label={updateEventMutation.isPending ? "Saving..." : "Save"} disabled={updateEventMutation.isPending} onPress={() => updateEventMutation.mutate(String(event.id))} /></View>
+                    <View style={{ flex: 1 }}><Button theme={theme} label="Cancel" secondary onPress={() => setEditingEventId(null)} /></View>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <Text style={[styles.muted, { color: theme.colors.ink, fontWeight: "700" }]}>{String(event.title)}</Text>
+                  <Text style={[styles.muted, { color: theme.colors.slate }]}>{String(event.ticketsSold ?? 0)} sold · {String(event.checkIns ?? 0)} check-ins</Text>
+                  <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+                    <Pressable onPress={() => { setEditingEventId(String(event.id)); setEditTitle(String(event.title)); setEditVenue(String(event.venueName ?? "")); setEditCity(String(event.city ?? "")); }} style={{ padding: 8, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.line }}>
+                      <Edit2 size={14} color={theme.colors.gold} />
+                    </Pressable>
+                    <Pressable onPress={() => popularityMutation.mutate({ id: String(event.id), isPopular: !event.isPopular })} style={{ padding: 8, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.line }}>
+                      <Star size={14} color={event.isPopular ? theme.colors.gold : theme.colors.slate} fill={event.isPopular ? theme.colors.gold : "none"} />
+                    </Pressable>
+                    <Pressable onPress={() => deleteEventMutation.mutate(String(event.id))} disabled={deleteEventMutation.isPending} style={{ padding: 8, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.line }}>
+                      <Trash2 size={14} color={theme.colors.danger} />
+                    </Pressable>
+                  </View>
+                </>
+              )}
+            </View>
+          ))}
+        </Card>
+
+        {/* Staff */}
+        <Card theme={theme} style={{ marginTop: 18 }}>
+          <Users size={22} color={theme.colors.gold} />
+          <Text style={[styles.cardTitle, { color: theme.colors.ink, marginTop: 10 }]}>Staff</Text>
+          {staffList.map((member) => {
+            const user = (member.user ?? {}) as Record<string, unknown>;
+            const profile = (user.profile ?? {}) as Record<string, unknown>;
+            return (
+              <View key={String(member.id)} style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 10, gap: 8 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.muted, { color: theme.colors.ink, fontWeight: "700" }]}>{String(profile.fullName ?? user.email ?? "")}</Text>
+                  <Text style={{ fontSize: 12, color: theme.colors.slate }}>{String(user.email ?? "")} · {String((member.event as Record<string, unknown> | undefined)?.title ?? "")}</Text>
+                </View>
+                <Pressable onPress={() => removeStaffMutation.mutate(String(member.id))} disabled={removeStaffMutation.isPending} style={{ padding: 8, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.line }}>
+                  <Trash2 size={14} color={theme.colors.danger} />
+                </Pressable>
+              </View>
+            );
+          })}
+          <View style={{ marginTop: 14, borderTopWidth: 1, borderTopColor: theme.colors.line, paddingTop: 12 }}>
+            <Text style={[styles.muted, { color: theme.colors.slate, fontWeight: "700", marginBottom: 4 }]}>Add staff</Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+              {events.map((ev) => (
+                <Pressable key={String(ev.id)} onPress={() => setStaffEventId(String(ev.id))} style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: staffEventId === String(ev.id) ? theme.colors.gold : theme.colors.line, backgroundColor: staffEventId === String(ev.id) ? theme.colors.gold + "20" : "transparent" }}>
+                  <Text style={{ color: staffEventId === String(ev.id) ? theme.colors.gold : theme.colors.slate, fontSize: 12, fontWeight: "700" }}>{String(ev.title)}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <TextInput style={inputStyle(theme)} placeholder="Staff email" placeholderTextColor={theme.colors.slate} autoCapitalize="none" keyboardType="email-address" value={staffEmail} onChangeText={setStaffEmail} />
+            <View style={{ height: 10 }} />
+            <Button theme={theme} label={addStaffMutation.isPending ? "Adding..." : "Add staff member"} disabled={!staffEmail || !staffEventId || addStaffMutation.isPending} onPress={() => addStaffMutation.mutate()} />
+          </View>
+        </Card>
+
+        {/* Attendees */}
+        <Card theme={theme} style={{ marginTop: 18 }}>
+          <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Attendees</Text>
+          {attendeesQuery.isLoading ? (
+            <Text style={[styles.muted, { color: theme.colors.slate }]}>Loading...</Text>
+          ) : attendeeList.length === 0 ? (
+            <Text style={[styles.muted, { color: theme.colors.slate }]}>No attendees yet.</Text>
+          ) : attendeeList.slice(0, 10).map((attendee) => (
+            <View key={String(attendee.id)} style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: theme.colors.line }}>
+              <Text style={[styles.muted, { color: theme.colors.ink, fontWeight: "700" }]}>{String(attendee.attendeeName ?? attendee.email ?? "")}</Text>
+              <Text style={{ fontSize: 12, color: theme.colors.slate }}>{String(attendee.eventTitle ?? "")} · {String(attendee.ticketType ?? "")} · {String(attendee.status ?? "")}</Text>
+            </View>
+          ))}
+          {attendeeList.length > 10 && <Text style={[styles.muted, { color: theme.colors.slate }]}>+{attendeeList.length - 10} more</Text>}
+        </Card>
+
+        {/* Ticket types */}
+        <Card theme={theme} style={{ marginTop: 18 }}>
+          <Ticket size={22} color={theme.colors.gold} />
+          <Text style={[styles.cardTitle, { color: theme.colors.ink, marginTop: 10 }]}>Ticket types</Text>
+          {ticketTypeList.slice(0, 8).map((tt) => (
+            <Text key={String(tt.id)} style={[styles.muted, { color: theme.colors.slate }]}>{String(tt.name)} · GHS {String(tt.price)} · {String(tt.soldQuantity ?? 0)}/{String(tt.quantity ?? 0)} sold</Text>
+          ))}
+          <View style={{ marginTop: 14, borderTopWidth: 1, borderTopColor: theme.colors.line, paddingTop: 12 }}>
+            <Text style={[styles.muted, { color: theme.colors.slate, fontWeight: "700", marginBottom: 4 }]}>Create ticket type</Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+              {events.map((ev) => (
+                <Pressable key={String(ev.id)} onPress={() => setTtEventId(String(ev.id))} style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: ttEventId === String(ev.id) ? theme.colors.gold : theme.colors.line, backgroundColor: ttEventId === String(ev.id) ? theme.colors.gold + "20" : "transparent" }}>
+                  <Text style={{ color: ttEventId === String(ev.id) ? theme.colors.gold : theme.colors.slate, fontSize: 12, fontWeight: "700" }}>{String(ev.title)}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <View style={{ flexDirection: "row", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
+              {(["REGULAR", "VIP", "VVIP", "TABLE"] as const).map((k) => (
+                <Pressable key={k} onPress={() => setTtKind(k)} style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: ttKind === k ? theme.colors.gold : theme.colors.line, backgroundColor: ttKind === k ? theme.colors.gold + "20" : "transparent" }}>
+                  <Text style={{ color: ttKind === k ? theme.colors.gold : theme.colors.slate, fontSize: 12, fontWeight: "700" }}>{k}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <TextInput style={inputStyle(theme)} placeholder="Name (e.g. VIP Early Bird)" placeholderTextColor={theme.colors.slate} value={ttName} onChangeText={setTtName} />
+            <TextInput style={inputStyle(theme)} placeholder="Price (GHS)" placeholderTextColor={theme.colors.slate} keyboardType="decimal-pad" value={ttPrice} onChangeText={setTtPrice} />
+            <TextInput style={inputStyle(theme)} placeholder="Quantity" placeholderTextColor={theme.colors.slate} keyboardType="number-pad" value={ttQty} onChangeText={setTtQty} />
+            <View style={{ height: 10 }} />
+            <Button theme={theme} label={createTicketTypeMutation.isPending ? "Creating..." : "Create ticket type"} disabled={!ttEventId || !ttName || !ttPrice || !ttQty || createTicketTypeMutation.isPending} onPress={() => createTicketTypeMutation.mutate()} />
+          </View>
+        </Card>
+
+        {/* Vendors */}
+        <Card theme={theme} style={{ marginTop: 18 }}>
+          <WalletCards size={22} color={theme.colors.gold} />
+          <Text style={[styles.cardTitle, { color: theme.colors.ink, marginTop: 10 }]}>Vendors</Text>
+          {vendorList.map((vendor) => (
+            <View key={String(vendor.id)} style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 10, gap: 8 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.muted, { color: theme.colors.ink, fontWeight: "700" }]}>{String(vendor.businessName ?? "")}</Text>
+                <Text style={{ fontSize: 12, color: theme.colors.slate }}>{String(vendor.category ?? "")} · {String(vendor.email ?? "")}</Text>
+              </View>
+              <Pressable onPress={() => removeVendorMutation.mutate(String(vendor.id))} disabled={removeVendorMutation.isPending} style={{ padding: 8, borderRadius: 8, borderWidth: 1, borderColor: theme.colors.line }}>
+                <Trash2 size={14} color={theme.colors.danger} />
+              </Pressable>
+            </View>
+          ))}
+          <View style={{ marginTop: 14, borderTopWidth: 1, borderTopColor: theme.colors.line, paddingTop: 12 }}>
+            <Text style={[styles.muted, { color: theme.colors.slate, fontWeight: "700", marginBottom: 4 }]}>Add vendor</Text>
+            <TextInput style={inputStyle(theme)} placeholder="Vendor email" placeholderTextColor={theme.colors.slate} autoCapitalize="none" keyboardType="email-address" value={vendorEmail} onChangeText={setVendorEmail} />
+            <TextInput style={inputStyle(theme)} placeholder="Business name" placeholderTextColor={theme.colors.slate} value={vendorBusiness} onChangeText={setVendorBusiness} />
+            <TextInput style={inputStyle(theme)} placeholder="Category (e.g. Catering)" placeholderTextColor={theme.colors.slate} value={vendorCategory} onChangeText={setVendorCategory} />
+            <View style={{ height: 10 }} />
+            <Button theme={theme} label={addVendorMutation.isPending ? "Adding..." : "Add vendor"} disabled={!vendorEmail || !vendorBusiness || !vendorCategory || addVendorMutation.isPending} onPress={() => addVendorMutation.mutate()} />
+          </View>
+        </Card>
+
+        {/* Vendor transactions */}
+        <Card theme={theme} style={{ marginTop: 18 }}>
+          <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Vendor transactions</Text>
+          {(transactionsQuery.data?.data ?? []).slice(0, 8).map((transaction) => (
+            <View key={transaction.id} style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 8, gap: 8 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.muted, { color: theme.colors.slate }]}>{transaction.vendor} — {transaction.currency} {transaction.amount}</Text>
+                <Text style={{ fontSize: 12, color: theme.colors.slate }}>{transaction.status}</Text>
+              </View>
+              {transaction.status === "PENDING" && (
+                <Pressable onPress={() => confirmTxMutation.mutate(String(transaction.id))} disabled={confirmTxMutation.isPending} style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: theme.colors.gold }}>
+                  <Text style={{ color: "#000000", fontWeight: "800", fontSize: 12 }}>{confirmTxMutation.isPending ? "…" : "Confirm"}</Text>
+                </Pressable>
+              )}
+            </View>
+          ))}
+        </Card>
+
+        {/* Seating */}
+        <Card theme={theme} style={{ marginTop: 18 }}>
+          <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Seating</Text>
+          {seatingData.slice(0, 8).map((seat) => (
+            <Text key={String(seat.id)} style={[styles.muted, { color: theme.colors.slate }]}>Seat {String(seat.label ?? "")} · {String(seat.status ?? "")} {seat.ticketId ? "· Assigned" : ""}</Text>
+          ))}
+          <View style={{ marginTop: 14, borderTopWidth: 1, borderTopColor: theme.colors.line, paddingTop: 12 }}>
+            <Text style={[styles.muted, { color: theme.colors.slate, fontWeight: "700", marginBottom: 4 }]}>Assign seat</Text>
+            <TextInput style={inputStyle(theme)} placeholder="Seat ID" placeholderTextColor={theme.colors.slate} autoCapitalize="none" value={assignSeatId} onChangeText={setAssignSeatId} />
+            <TextInput style={inputStyle(theme)} placeholder="Ticket ID" placeholderTextColor={theme.colors.slate} autoCapitalize="none" value={assignTicketId} onChangeText={setAssignTicketId} />
+            <View style={{ height: 10 }} />
+            <Button theme={theme} label={assignSeatMutation.isPending ? "Assigning..." : "Assign seat"} disabled={!assignSeatId || !assignTicketId || assignSeatMutation.isPending} onPress={() => assignSeatMutation.mutate()} />
+          </View>
+        </Card>
+
+        {/* Communications */}
         <Card theme={theme} style={{ marginTop: 18 }}>
           <MessageSquare size={22} color={theme.colors.gold} />
           <Text style={[styles.cardTitle, { color: theme.colors.ink, marginTop: 10 }]}>Staff and vendor communication</Text>
           {(messagesQuery.data?.data ?? []).slice(0, 4).map((message) => (
-            <Text key={message.id} style={[styles.muted, { color: theme.colors.slate }]}>{message.audience}: {message.subject}</Text>
+            <View key={message.id} style={{ marginTop: 8 }}>
+              <Text style={[styles.muted, { color: theme.colors.ink, fontWeight: "700" }]}>{message.subject}</Text>
+              <Text style={{ fontSize: 12, color: theme.colors.slate }}>{message.audience} · {message.body}</Text>
+            </View>
           ))}
           <View style={{ marginTop: 16, borderTopWidth: 1, borderTopColor: theme.colors.line, paddingTop: 14 }}>
             <Text style={[styles.muted, { color: theme.colors.slate, marginBottom: 4, fontWeight: "700" }]}>Send message</Text>
             {events.length > 0 && (
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
-                {events.slice(0, 5).map((ev) => (
+                {events.map((ev) => (
                   <Pressable key={String(ev.id)} onPress={() => setCommEventId(String(ev.id))} style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: commEventId === String(ev.id) ? theme.colors.gold : theme.colors.line, backgroundColor: commEventId === String(ev.id) ? theme.colors.gold + "20" : "transparent" }}>
                     <Text style={{ color: commEventId === String(ev.id) ? theme.colors.gold : theme.colors.slate, fontSize: 12, fontWeight: "700" }}>{String(ev.title)}</Text>
                   </Pressable>
@@ -914,33 +1246,12 @@ export function OrganizerQuickScreen({ go, theme }: { go?: (screen: string) => v
             <Button theme={theme} label={sendCommMutation.isPending ? "Sending..." : "Send message"} disabled={!commEventId || !commSubject || !commBody || sendCommMutation.isPending} onPress={() => sendCommMutation.mutate()} />
           </View>
         </Card>
-        <Card theme={theme} style={{ marginTop: 18 }}>
-          <WalletCards size={22} color={theme.colors.gold} />
-          <Text style={[styles.cardTitle, { color: theme.colors.ink, marginTop: 10 }]}>Vendor transactions</Text>
-          {(transactionsQuery.data?.data ?? []).slice(0, 8).map((transaction) => (
-            <View key={transaction.id} style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 8, gap: 8 }}>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.muted, { color: theme.colors.slate }]}>{transaction.vendor} — {transaction.currency} {transaction.amount}</Text>
-                <Text style={{ fontSize: 12, color: theme.colors.slate }}>{transaction.status}</Text>
-              </View>
-              {transaction.status === "PENDING" && (
-                <Pressable
-                  onPress={() => confirmTxMutation.mutate(String(transaction.id))}
-                  disabled={confirmTxMutation.isPending}
-                  style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: theme.colors.gold }}
-                >
-                  <Text style={{ color: "#000000", fontWeight: "800", fontSize: 12 }}>
-                    {confirmTxMutation.isPending ? "…" : "Confirm"}
-                  </Text>
-                </Pressable>
-              )}
-            </View>
-          ))}
-        </Card>
+
+        {/* Social analytics */}
         <Card theme={theme} style={{ marginTop: 18 }}>
           <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>Social and hashtag analytics</Text>
           {socialSummary.slice(0, 4).map((item) => (
-            <Text key={`${item.provider}-${item.hashtag}`} style={[styles.muted, { color: theme.colors.slate }]}>{String(item.provider)} {String(item.hashtag)} - {Number(item.reach ?? 0).toLocaleString()} reach</Text>
+            <Text key={`${item.provider}-${item.hashtag}`} style={[styles.muted, { color: theme.colors.slate }]}>{String(item.provider)} {String(item.hashtag)} — {Number(item.reach ?? 0).toLocaleString()} reach</Text>
           ))}
         </Card>
       </ScrollView>
@@ -990,6 +1301,14 @@ export function NotificationsScreen({ go, theme, notify }: { go: (screen: string
     onError: (error) => notify(error.message, "Error", "error")
   });
 
+  const markOneMutation = useMutation({
+    mutationFn: async (id: string) => withMobileAuth((token) => api.markNotificationRead(token, id)),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      void queryClient.invalidateQueries({ queryKey: ["notification-count"] });
+    }
+  });
+
   const notifications = listQuery.data?.data ?? [];
   const unreadCount   = notifications.filter((n) => !n.readAt).length;
 
@@ -1024,20 +1343,23 @@ export function NotificationsScreen({ go, theme, notify }: { go: (screen: string
           </Card>
         )}
         {notifications.map((n) => (
-          <Card key={n.id} theme={theme} style={{ marginBottom: 10 }}>
-            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
-              {!n.readAt && (
-                <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.gold, marginTop: 5 }} />
-              )}
-              <View style={{ flex: 1, paddingLeft: n.readAt ? 18 : 0 }}>
-                <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>{n.title}</Text>
-                <Text style={[styles.copy, { color: theme.colors.slate }]}>{n.body}</Text>
-                <Text style={[styles.muted, { color: theme.colors.slate }]}>
-                  {new Date(n.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
-                </Text>
+          <Pressable key={n.id} onPress={() => { if (!n.readAt) markOneMutation.mutate(n.id); }}>
+            <Card theme={theme} style={{ marginBottom: 10, opacity: markOneMutation.isPending ? 0.7 : 1 }}>
+              <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
+                {!n.readAt && (
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.gold, marginTop: 5 }} />
+                )}
+                <View style={{ flex: 1, paddingLeft: n.readAt ? 18 : 0 }}>
+                  <Text style={[styles.cardTitle, { color: theme.colors.ink }]}>{n.title}</Text>
+                  <Text style={[styles.copy, { color: theme.colors.slate }]}>{n.body}</Text>
+                  <Text style={[styles.muted, { color: theme.colors.slate }]}>
+                    {new Date(n.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                    {!n.readAt ? " · Tap to mark read" : ""}
+                  </Text>
+                </View>
               </View>
-            </View>
-          </Card>
+            </Card>
+          </Pressable>
         ))}
       </ScrollView>
     </Screen>
