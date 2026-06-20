@@ -1,41 +1,37 @@
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 import QRCode from "qrcode";
 import { env } from "../env";
 
-const hasSmtp = Boolean(env.SMTP_HOST && env.SMTP_PORT && env.SMTP_USER && env.SMTP_PASS);
+const resend = env.RESEND_API_KEY ? new Resend(env.RESEND_API_KEY) : null;
 
-if (hasSmtp) {
-  console.log(`[email] SMTP configured — host=${env.SMTP_HOST} port=${env.SMTP_PORT} user=${env.SMTP_USER} from=${env.SMTP_FROM}`);
+if (resend) {
+  console.log(`[email] Resend configured — from=${env.EMAIL_FROM}`);
 } else {
-  console.warn(`[email] SMTP NOT configured — emails will be logged to console only. Missing: ${[
-    !env.SMTP_HOST && "SMTP_HOST",
-    !env.SMTP_PORT && "SMTP_PORT",
-    !env.SMTP_USER && "SMTP_USER",
-    !env.SMTP_PASS && "SMTP_PASS"
-  ].filter(Boolean).join(", ")}`);
+  console.warn("[email] RESEND_API_KEY not set — emails will be logged to console only");
 }
 
-const transporter = hasSmtp
-  ? nodemailer.createTransport({
-      host: env.SMTP_HOST,
-      port: env.SMTP_PORT,
-      secure: env.SMTP_PORT === 465,
-      auth: { user: env.SMTP_USER, pass: env.SMTP_PASS }
-    })
-  : nodemailer.createTransport({ jsonTransport: true });
-
-if (hasSmtp) {
-  transporter.verify().then(() => {
-    console.log("[email] SMTP connection verified — ready to send");
-  }).catch((err: unknown) => {
-    console.error("[email] SMTP connection FAILED — check credentials:", err instanceof Error ? err.message : err);
+async function send(payload: { to: string; subject: string; html: string; text: string; attachments?: Array<{ filename: string; content: Buffer; cid: string }> }) {
+  if (!resend) {
+    console.log(`[email] dev — to=${payload.to} subject="${payload.subject}"`);
+    return;
+  }
+  const { error } = await resend.emails.send({
+    from: env.EMAIL_FROM,
+    to: [payload.to],
+    subject: payload.subject,
+    html: payload.html,
+    text: payload.text,
+    attachments: payload.attachments?.map((a) => ({
+      filename: a.filename,
+      content: a.content
+    }))
   });
+  if (error) throw new Error(error.message);
 }
 
 export const emailService = {
   async sendVerificationCode(input: { email: string; fullName: string; code: string }) {
-    const info = await transporter.sendMail({
-      from: env.SMTP_FROM,
+    await send({
       to: input.email,
       subject: "Verify your Velvet Rope account",
       text: `Hi ${input.fullName}, your Velvet Rope verification code is ${input.code}. It expires in 30 minutes.`,
@@ -49,7 +45,6 @@ export const emailService = {
         </div>
       `
     });
-    if (!hasSmtp) console.log("[email] dev mode — verification code:", input.code, info.messageId);
   },
 
   async sendTicketConfirmation(input: {
@@ -75,14 +70,12 @@ export const emailService = {
           <div style="border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin:16px 0">
             <p style="margin:0 0 6px;font-weight:700">${ticket.ticketType} ticket</p>
             <p style="margin:0 0 12px;color:#4b5563">Code: ${ticket.code}</p>
-            <img src="cid:${ticket.code}@velvet-rope" alt="${ticket.code} QR code" width="160" height="160" />
           </div>
         `
       )
       .join("");
 
-    const info = await transporter.sendMail({
-      from: env.SMTP_FROM,
+    await send({
       to: input.email,
       subject: `Your Velvet Rope tickets for ${input.eventTitle}`,
       text: `Hi ${input.fullName}, your ${input.eventTitle} tickets are ready. Codes: ${input.tickets.map((t) => t.code).join(", ")}`,
@@ -96,13 +89,11 @@ export const emailService = {
       `,
       attachments
     });
-    if (!hasSmtp) console.log("[email] dev mode — ticket confirmation:", info.messageId);
   },
 
   async sendPasswordReset(input: { email: string; fullName: string; token: string }) {
     const resetUrl = `${env.WEB_APP_URL}/reset-password?token=${encodeURIComponent(input.token)}`;
-    const info = await transporter.sendMail({
-      from: env.SMTP_FROM,
+    await send({
       to: input.email,
       subject: "Reset your Velvet Rope password",
       text: `Hi ${input.fullName}, reset your password here: ${resetUrl}. Expires in 30 minutes.`,
@@ -120,7 +111,6 @@ export const emailService = {
         </div>
       `
     });
-    if (!hasSmtp) console.log("[email] dev mode — password reset:", resetUrl, info.messageId);
   },
 
   async sendCheckInConfirmation(input: {
@@ -132,8 +122,7 @@ export const emailService = {
     checkedInAt: string;
     gate?: string;
   }) {
-    const info = await transporter.sendMail({
-      from: env.SMTP_FROM,
+    await send({
       to: input.email,
       subject: `You're checked in — ${input.eventTitle}`,
       text: `Hi ${input.fullName}, you've been successfully checked in to ${input.eventTitle}. Ticket: ${input.ticketCode}${input.gate ? ` (Gate: ${input.gate})` : ""}. Checked in at: ${new Date(input.checkedInAt).toLocaleString()}.`,
@@ -152,7 +141,6 @@ export const emailService = {
         </div>
       `
     });
-    if (!hasSmtp) console.log("[email] dev mode — check-in confirmation:", input.ticketCode, info.messageId);
   },
 
   async sendInvitation(input: {
@@ -164,8 +152,7 @@ export const emailService = {
     token: string;
   }) {
     const inviteUrl = `${env.WEB_APP_URL}/events?invite=${encodeURIComponent(input.token)}`;
-    const info = await transporter.sendMail({
-      from: env.SMTP_FROM,
+    await send({
       to: input.email,
       subject: `${input.senderName} invited you to ${input.eventTitle}`,
       text: `${input.recipientName}, ${input.senderName} invited you to ${input.eventTitle}. ${input.message ?? ""} Respond: ${inviteUrl}`,
@@ -183,6 +170,5 @@ export const emailService = {
         </div>
       `
     });
-    if (!hasSmtp) console.log("[email] dev mode — invitation:", inviteUrl, info.messageId);
   }
 };

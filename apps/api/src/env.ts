@@ -10,11 +10,8 @@ const envSchema = z.object({
   PAYSTACK_CALLBACK_URL: z.string().url(),
   WEB_APP_URL: z.string().url().default("http://localhost:3000"),
   PORT: z.coerce.number().int().positive().default(4000),
-  SMTP_HOST: z.string().optional(),
-  SMTP_PORT: z.coerce.number().int().positive().optional(),
-  SMTP_USER: z.string().optional(),
-  SMTP_PASS: z.string().optional(),
-  SMTP_FROM: z.string().email().default("no-reply@velvetrope.local"),
+  RESEND_API_KEY: z.string().min(1).optional(),
+  EMAIL_FROM: z.string().default("Velvet Rope <onboarding@resend.dev>"),
   CLOUDINARY_CLOUD_NAME: z.string().optional(),
   CLOUDINARY_API_KEY: z.string().optional(),
   CLOUDINARY_API_SECRET: z.string().optional()
