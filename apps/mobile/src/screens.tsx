@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { FlatList, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { FlatList, Image, KeyboardAvoidingView, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -498,9 +498,11 @@ export function EventDetailsScreen({ slug, go, theme, isAuthenticated, notify }:
   return (
     <Screen theme={theme}>
       <SubPageHeader title="Event details" theme={theme} onBack={() => go("home")} />
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={16}>
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 156 }}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={{ paddingBottom: 40 }}
         refreshControl={<RefreshControl refreshing={eventQuery.isRefetching && !eventQuery.isLoading} onRefresh={() => void eventQuery.refetch()} tintColor={theme.colors.gold} colors={[theme.colors.gold]} progressBackgroundColor={theme.colors.card} />}
       >
         <Image source={{ uri: event.bannerUrl }} style={styles.detailImage} resizeMode="cover" />
@@ -570,6 +572,7 @@ export function EventDetailsScreen({ slug, go, theme, isAuthenticated, notify }:
           <Button theme={theme} label={inviteMutation.isPending ? "Sending..." : "Send invitation"} disabled={inviteMutation.isPending || !inviteName || !inviteEmail} onPress={() => inviteMutation.mutate()} />
         </Card>
       </ScrollView>
+      </KeyboardAvoidingView>
     </Screen>
   );
 }

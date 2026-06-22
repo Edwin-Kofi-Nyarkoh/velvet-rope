@@ -394,8 +394,16 @@ function NavLink({ href, label, icon: Icon }: { href: string; label: string; ico
 export function DashboardShell({ children, title, action }: { children: React.ReactNode; title: string; action?: React.ReactNode }) {
   const user        = useStoredUser();
   const router      = useRouter();
+  const pathname    = usePathname();
   const isOrganizer = user ? ["ORGANIZER", "ADMIN", "SUPER_ADMIN"].includes(user.role) : false;
   const navItems    = isOrganizer ? organizerNav : attendeeNav;
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  // Close "More" panel when navigating
+  useEffect(() => { setMoreOpen(false); }, [pathname]);
+
+  const primaryItems = navItems.slice(0, 5);
+  const overflowItems = navItems.slice(5);
 
   const logout = () => {
     clearWebAuth();
@@ -441,10 +449,27 @@ export function DashboardShell({ children, title, action }: { children: React.Re
 
       {/* Mobile bottom nav */}
       <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-vr-border bg-vr-surface lg:hidden">
+        {/* Overflow panel */}
+        {moreOpen && overflowItems.length > 0 && (
+          <div className="grid grid-cols-3 gap-1 border-b border-vr-border bg-vr-surface px-2 py-2">
+            {overflowItems.map(({ href, label, icon: Icon }) => (
+              <MobileNavItem key={href} href={href} label={label} Icon={Icon} />
+            ))}
+          </div>
+        )}
         <div className="flex items-center">
-          {navItems.slice(0, 5).map(({ href, label, icon: Icon }) => (
+          {primaryItems.map(({ href, label, icon: Icon }) => (
             <MobileNavItem key={href} href={href} label={label} Icon={Icon} />
           ))}
+          {overflowItems.length > 0 && (
+            <button
+              onClick={() => setMoreOpen((v) => !v)}
+              className={`flex flex-1 flex-col items-center gap-1 py-3 text-[10px] font-medium transition ${moreOpen ? "text-vr-gold" : "text-vr-muted hover:text-vr-text"}`}
+            >
+              <Menu className="size-5" />
+              <span>More</span>
+            </button>
+          )}
         </div>
       </nav>
     </div>
